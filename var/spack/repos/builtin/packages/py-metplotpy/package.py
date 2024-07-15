@@ -25,7 +25,7 @@ class Metcalcpy(Package):
 
   depends_on("python@3.8:", type=("build", "link", "run"))
 
-  depends_on("eofs", type=("run"))
+  depends_on("py-eofs", type=("run"))
   depends_on("py-cartopy", type=("run"))
   depends_on("py-imageio", type=("run"))
   depends_on("imutils", type=("run"))

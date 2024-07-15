@@ -6,7 +6,7 @@
 from spack.package import *
 
 
-class Eofs(Package):
+class PyEofs(PythonPackage):
     """
     eofs is a Python package for performing empirical orthogonal function (EOF) analysis on spatial-temporal data sets.
     """
