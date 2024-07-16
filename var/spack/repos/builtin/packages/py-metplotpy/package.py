@@ -29,6 +29,9 @@ class PyMetplotpy(PythonPackage):
   depends_on("py-cartopy", type=("run"))
   depends_on("py-imageio", type=("run"))
   depends_on("py-imutils", type=("run"))
+  depends_on("py-kaleido", type=("run"))
+  depends_on("py-matplotlib", type=("run"))
+  depends_on("py-metcalcpy", type=("build", "run"))
   depends_on("py-metpy", type=("run"))
   depends_on("py-python-dateutil", type=("run"))
   depends_on("py-netcdf4", type=("build", "run"))
@@ -42,10 +45,6 @@ class PyMetplotpy(PythonPackage):
   depends_on("py-scikit-learn", type=("run"))
   depends_on("py-scipy", type=("run"))
   depends_on("py-xarray", type=("build", "run"))
-
-  depends_on("py-cartopy", when="+makeplots", type=("run"))
-  depends_on("py-cartopy", when="+cycloneplotter", type=("run"))
-  depends_on("py-matplotlib", when="+cycloneplotter", type=("run"))
 
   depends_on("r", when="+tcmpr_plotter", type=("run"))
   depends_on("imagemagick", when="+series_analysis", type=("run"))
