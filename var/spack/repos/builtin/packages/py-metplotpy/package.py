@@ -45,7 +45,3 @@ class PyMetplotpy(PythonPackage):
   depends_on("py-scikit-learn", type=("run"))
   depends_on("py-scipy", type=("run"))
   depends_on("py-xarray", type=("build", "run"))
-
-  depends_on("r", when="+tcmpr_plotter", type=("run"))
-  depends_on("imagemagick", when="+series_analysis", type=("run"))
-  depends_on("imagemagick", when="+plotdataplane", type=("run"))
