@@ -32,6 +32,6 @@ class PyMetdataio(PythonPackage):
   depends_on("py-pandas", type=("build", "run"))
   depends_on("py-pymysql", type=("build", "run"))
   depends_on("py-python-dateutil", type=("run"))
-  depends_on("pytest", type=("build", "link", "run"))
+  depends_on("py-pytest", type=("test"))
   depends_on("py-pyyaml", type=("run"))
   depends_on("py-xarray", type=("build", "run"))
