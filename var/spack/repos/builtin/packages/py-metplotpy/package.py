@@ -6,7 +6,7 @@
 from spack.package import *
 
 
-class Metcalcpy(Package):
+class PyMetplotpy(PythonPackage):
   """
   METplotpy is a suite of scripts to plot MET output, and in some cases provide additional
   post-processing of output prior to plotting.

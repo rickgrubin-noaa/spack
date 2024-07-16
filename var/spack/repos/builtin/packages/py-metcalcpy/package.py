@@ -6,7 +6,7 @@
 from spack.package import *
 
 
-class Metcalcpy(Package):
+class PyMetcalcpy(PythonPackage):
   """
   Provides libraries for the following: calculation of statistics, pre-processing input, and performing
   diagnostics for METviewer, METexpress, and the plotting scripts in METplotpy.

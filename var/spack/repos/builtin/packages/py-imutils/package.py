@@ -6,7 +6,7 @@
 from spack.package import *
 
 
-class Imutils(Package):
+class PyImutils(PythonPackage):
     """
     imutils is a series of convenience functions to make basic image processing functions such as 
     translation, rotation, resizing, skeletonization, and displaying Matplotlib images easier with OpenCV."

@@ -6,7 +6,7 @@
 from spack.package import *
 
 
-class Metdataio(Package):
+class PyMetdataio(PythonPackage):
   """
   METdataio is a suite of data ingest and export tools to store and retrieve MET output to be
   used by other MET tools including METviewer and METexpress.
@@ -27,7 +27,7 @@ class Metdataio(Package):
 
   depends_on("python@3.10.4:", type=("build", "link", "run"))
 
-  depends_on("py-lxml", type=("build", run"))
+  depends_on("py-lxml", type=("build", "run"))
   depends_on("py-numpy", type=("build", "run"))
   depends_on("py-pandas", type=("build", "run"))
   depends_on("py-pymysql", type=("build", "run"))
