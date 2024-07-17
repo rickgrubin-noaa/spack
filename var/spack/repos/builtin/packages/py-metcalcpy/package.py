@@ -30,19 +30,19 @@ class PyMetcalcpy(PythonPackage):
   variant("makeplots", default=False, description="Enable MakePlots Wrapper.")
   variant("plotdataplane", default=False, description="Generate images from Postscript output.")
 
-  depends_on("met+python", type=("run")) 
-  depends_on("py-python-dateutil", type=("run"))
+  #depends_on("met+python", type=("run")) 
 
   depends_on("python@3.8:", type=("build", "link", "run"))
 
   depends_on("py-eofs", type=("run"))
   depends_on("py-imageio", type=("run"))
   depends_on("py-imutils", type=("run"))
+  depends_on("py-kaleido", type=("run"))
   depends_on("py-matplotlib", type=("run"))
   depends_on("py-metpy", type=("run"))
   depends_on("py-netcdf4", type=("build", "run"))
   depends_on("py-numpy", type=("build", "run"))
-  depends_on("opencv", type=("run"))
+  depends_on("opencv-python", type=("run"))
   depends_on("py-pandas", type=("build", "run"))
   depends_on("py-pint", type=("run"))
   depends_on("py-pytest", type=("test"))
