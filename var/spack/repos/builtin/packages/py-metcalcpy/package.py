@@ -42,7 +42,7 @@ class PyMetcalcpy(PythonPackage):
   depends_on("py-metpy", type=("run"))
   depends_on("py-netcdf4", type=("build", "run"))
   depends_on("py-numpy", type=("build", "run"))
-  depends_on("opencv-python", type=("run"))
+  depends_on("py-opencv-python", type=("run"))
   depends_on("py-pandas", type=("build", "run"))
   depends_on("py-pint", type=("run"))
   depends_on("py-pytest", type=("test"))
