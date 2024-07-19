@@ -34,6 +34,7 @@ class PyMetcalcpy(PythonPackage):
 
   depends_on("python@3.8:", type=("build", "link", "run"))
 
+  depends_on("opencv+python", type=("build", "run"))
   depends_on("py-eofs", type=("build", "run"))
   depends_on("py-imageio", type=("build", "run"))
   depends_on("py-imutils", type=("build", "run"))
@@ -42,7 +43,6 @@ class PyMetcalcpy(PythonPackage):
   depends_on("py-metpy", type=("build", "run"))
   depends_on("py-netcdf4", type=("build", "run"))
   depends_on("py-numpy", type=("build", "run"))
-  depends_on("py-opencv-python", type=("build", "run"))
   depends_on("py-pandas", type=("build", "run"))
   depends_on("py-pint", type=("build", "run"))
   depends_on("py-pytest", type=("test"))
