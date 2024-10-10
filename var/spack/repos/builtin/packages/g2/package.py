@@ -20,6 +20,8 @@ class G2(CMakePackage):
     maintainers("AlexanderRichert-NOAA", "Hang-Lei-NOAA", "edwardhartnett")
 
     version("develop", branch="develop")
+    version("3.5.1", sha256="a9acdb5d23eca532838f21c4a917727ac85851fc9e1f100d65a6f27c1a563998")
+    version("3.5.0", sha256="3ff59a705bedf56061bba2d667a04391d82701847f93ea5fa1c1d3bd335d07da")
     version("3.4.9", sha256="6edc33091f6bd2acb191182831499c226a1c3992c3acc104d6363528b12dfbae")
     version("3.4.8", sha256="071a6f799c4c4fdfd5d0478152a0cbb9d668d12d71c78d5bda71845fc5580a7f")
     version("3.4.7", sha256="d6530611e3a515122f11ed4aeede7641f6f8932ef9ee0d4828786572767304dc")
@@ -56,6 +58,19 @@ class G2(CMakePackage):
         ]
 
         return args
+
+    # https://github.com/JCSDA/spack/issues/475
+    def flag_handler(self, name, flags):
+        if self.spec.satisfies("@3.5.1") and name == "fflags" and "gfortran" in self.compiler.fc:
+            with self.compiler.compiler_environment():
+                gfortran_major_version = int(
+                    spack.compiler.get_compiler_version_output(
+                        self.compiler.fc, "-dumpversion"
+                    ).split(".")[0]
+                )
+            if gfortran_major_version < 10:
+                flags.append("-fno-range-check")
+        return (None, None, flags)
 
     def setup_run_environment(self, env):
         precisions = (
