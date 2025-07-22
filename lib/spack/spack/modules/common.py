@@ -702,7 +702,7 @@ class BaseContext(tengine.Context):
             msg = "some tokens cannot be expanded in an environment variable name"
 
             _check_tokens_are_valid(x.name, message=msg)
-            # DH* 20240510 - preserve case of package name in {name}_ROOT env variables
+            # Preserve case of package name in {name}_ROOT env variables
             if "_ROOT" in x.name:
                 x.name = _format_env_var_name(self.spec, x.name, uppercase=False)
             else:

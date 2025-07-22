@@ -46,7 +46,6 @@ exclude =
   lib/spack/external
   __pycache__
   var
-  lib/jcsda-emc/spack-stack/stack/meta_modules.py
 
 format = spack
 
