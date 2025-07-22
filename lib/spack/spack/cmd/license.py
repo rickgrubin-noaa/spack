@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
+import argparse
 import enum
 import os
 import re
@@ -38,7 +39,6 @@ licensed_files = [
     r"^lib/spack/spack/.*\.sh$",
     r"^lib/spack/spack/.*\.lp$",
     r"^lib/spack/llnl/.*\.py$",
-    r"^lib/spack/env/cc$",
     # special case some test data files that have license headers
     r"^lib/spack/spack/test/data/style/broken.dummy",
     r"^lib/spack/spack/test/data/unparse/.*\.txt",
@@ -186,7 +186,7 @@ def verify(args):
         tty.msg("No license issues found.")
 
 
-def setup_parser(subparser):
+def setup_parser(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument(
         "--root",
         action="store",

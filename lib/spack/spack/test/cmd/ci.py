@@ -7,7 +7,7 @@ import pathlib
 import shutil
 from typing import NamedTuple
 
-import jsonschema
+import _vendoring.jsonschema
 import pytest
 
 from llnl.util.filesystem import mkdirp, working_dir
@@ -31,11 +31,8 @@ from spack.ci import gitlab as gitlab_generator
 from spack.ci.common import PipelineDag, PipelineOptions, SpackCIConfig
 from spack.ci.generator_registry import generator
 from spack.cmd.ci import FAILED_CREATE_BUILDCACHE_CODE
-from spack.database import INDEX_JSON_FILE
 from spack.error import SpackError
-from spack.schema.buildcache_spec import schema as specfile_schema
 from spack.schema.database_index import schema as db_idx_schema
-from spack.spec import Spec
 from spack.test.conftest import MockHTTPResponse
 
 config_cmd = spack.main.SpackCommand("config")
@@ -186,9 +183,9 @@ spack:
     assert yaml_contents["workflow"]["rules"] == [{"when": "always"}]
 
     assert "stages" in yaml_contents
-    assert len(yaml_contents["stages"]) == 5
+    assert len(yaml_contents["stages"]) == 6
     assert yaml_contents["stages"][0] == "stage-0"
-    assert yaml_contents["stages"][4] == "stage-rebuild-index"
+    assert yaml_contents["stages"][5] == "stage-rebuild-index"
 
     assert "rebuild-index" in yaml_contents
     rebuild_job = yaml_contents["rebuild-index"]
@@ -718,7 +715,7 @@ spack:
         )
 
     install_cmd("archive-files")
-    buildcache_cmd("push", "-f", "-u", mirror_url, "archive-files")
+    buildcache_cmd("push", "-f", "-u", "--update-index", mirror_url, "archive-files")
 
     with working_dir(tmp_path):
         env_cmd("create", "test", "./spack.yaml")
@@ -855,27 +852,23 @@ spack:
 
             # Test generating buildcache index while we have bin mirror
             buildcache_cmd("update-index", mirror_url)
-            with open(mirror_dir / "build_cache" / INDEX_JSON_FILE, encoding="utf-8") as idx_fd:
-                index_object = json.load(idx_fd)
-                jsonschema.validate(index_object, db_idx_schema)
+
+            # Validate resulting buildcache (database) index
+            layout_version = spack.binary_distribution.CURRENT_BUILD_CACHE_LAYOUT_VERSION
+            url_and_version = spack.binary_distribution.MirrorURLAndVersion(
+                mirror_url, layout_version
+            )
+            index_fetcher = spack.binary_distribution.DefaultIndexFetcher(url_and_version, None)
+            result = index_fetcher.conditional_fetch()
+            _vendoring.jsonschema.validate(json.loads(result.data), db_idx_schema)
 
             # Now that index is regenerated, validate "buildcache list" output
             assert "patchelf" in buildcache_cmd("list", output=str)
-            # Also test buildcache_spec schema
-            for file_name in os.listdir(mirror_dir / "build_cache"):
-                if file_name.endswith(".spec.json.sig"):
-                    with open(mirror_dir / "build_cache" / file_name, encoding="utf-8") as f:
-                        spec_dict = Spec.extract_json_from_clearsig(f.read())
-                        jsonschema.validate(spec_dict, specfile_schema)
 
             logs_dir = scratch / "logs_dir"
             logs_dir.mkdir()
             ci.copy_stage_logs_to_artifacts(concrete_spec, str(logs_dir))
             assert "spack-build-out.txt.gz" in os.listdir(logs_dir)
-
-            dl_dir = scratch / "download_dir"
-            buildcache_cmd("download", "--spec-file", json_path, "--path", str(dl_dir))
-            assert len(os.listdir(dl_dir)) == 2
 
 
 def test_push_to_build_cache_exceptions(monkeypatch, tmp_path, capsys):
@@ -1036,7 +1029,7 @@ spack:
 
 
 def test_ci_rebuild_index(
-    tmp_path: pathlib.Path, working_env, mutable_mock_env_path, install_mockery, mock_fetch
+    tmp_path: pathlib.Path, working_env, mutable_mock_env_path, install_mockery, mock_fetch, capsys
 ):
     scratch = tmp_path / "working_dir"
     mirror_dir = scratch / "mirror"
@@ -1073,8 +1066,9 @@ spack:
             buildcache_cmd("push", "-u", "-f", mirror_url, "callpath")
             ci_cmd("rebuild-index")
 
-            with open(mirror_dir / "build_cache" / INDEX_JSON_FILE, encoding="utf-8") as f:
-                jsonschema.validate(json.load(f), db_idx_schema)
+            with capsys.disabled():
+                output = buildcache_cmd("list", "--allarch")
+                assert "callpath" in output
 
 
 def test_ci_get_stack_changed(mock_git_repo, monkeypatch):
@@ -1978,6 +1972,13 @@ def test_ci_validate_git_versions_invalid(
         assert f"Invalid commit for diff-test@{version}" in err
 
 
+def mock_packages_path(path):
+    def packages_path():
+        return path
+
+    return packages_path
+
+
 @pytest.fixture
 def verify_standard_versions_valid(monkeypatch):
     def validate_standard_versions(pkg, versions):
@@ -2024,13 +2025,15 @@ def test_ci_verify_versions_valid(
     mock_git_package_changes,
     verify_standard_versions_valid,
     verify_git_versions_valid,
+    tmpdir,
 ):
-    repo_path, _, commits = mock_git_package_changes
-    monkeypatch.setattr(spack.paths, "prefix", repo_path)
+    repo, _, commits = mock_git_package_changes
+    with spack.repo.use_repositories(repo):
+        monkeypatch.setattr(spack.repo, "builtin_repo", lambda: repo)
 
-    out = ci_cmd("verify-versions", commits[-1], commits[-3])
-    assert "Validated diff-test@2.1.5" in out
-    assert "Validated diff-test@2.1.6" in out
+        out = ci_cmd("verify-versions", commits[-1], commits[-3])
+        assert "Validated diff-test@2.1.5" in out
+        assert "Validated diff-test@2.1.6" in out
 
 
 def test_ci_verify_versions_standard_invalid(
@@ -2040,21 +2043,22 @@ def test_ci_verify_versions_standard_invalid(
     verify_standard_versions_invalid,
     verify_git_versions_invalid,
 ):
-    repo_path, _, commits = mock_git_package_changes
+    repo, _, commits = mock_git_package_changes
+    with spack.repo.use_repositories(repo):
+        monkeypatch.setattr(spack.repo, "builtin_repo", lambda: repo)
 
-    monkeypatch.setattr(spack.paths, "prefix", repo_path)
-
-    out = ci_cmd("verify-versions", commits[-1], commits[-3], fail_on_error=False)
-    assert "Invalid checksum found diff-test@2.1.5" in out
-    assert "Invalid commit for diff-test@2.1.6" in out
+        out = ci_cmd("verify-versions", commits[-1], commits[-3], fail_on_error=False)
+        assert "Invalid checksum found diff-test@2.1.5" in out
+        assert "Invalid commit for diff-test@2.1.6" in out
 
 
 def test_ci_verify_versions_manual_package(monkeypatch, mock_packages, mock_git_package_changes):
-    repo_path, _, commits = mock_git_package_changes
-    monkeypatch.setattr(spack.paths, "prefix", repo_path)
+    repo, _, commits = mock_git_package_changes
+    with spack.repo.use_repositories(repo):
+        monkeypatch.setattr(spack.repo, "builtin_repo", lambda: repo)
 
-    pkg_class = spack.spec.Spec("diff-test").package_class
-    monkeypatch.setattr(pkg_class, "manual_download", True)
+        pkg_class = spack.spec.Spec("diff-test").package_class
+        monkeypatch.setattr(pkg_class, "manual_download", True)
 
-    out = ci_cmd("verify-versions", commits[-1], commits[-2])
-    assert "Skipping manual download package: diff-test" in out
+        out = ci_cmd("verify-versions", commits[-1], commits[-2])
+        assert "Skipping manual download package: diff-test" in out

@@ -28,9 +28,9 @@ def update_packages_config(conf_str):
 
 @pytest.fixture
 def test_repo(mutable_config, monkeypatch, mock_stage):
-    repo_dir = pathlib.Path(spack.paths.repos_path) / "requirements.test"
-    with spack.repo.use_repositories(str(repo_dir)) as mock_repo_path:
-        yield mock_repo_path
+    repo_dir = pathlib.Path(spack.paths.test_repos_path) / "spack_repo" / "requirements_test"
+    with spack.repo.use_repositories(str(repo_dir)) as mock_packages_repo:
+        yield mock_packages_repo
 
 
 def test_one_package_multiple_reqs(concretize_scope, test_repo):
@@ -494,8 +494,10 @@ packages:
     update_packages_config(conf_str)
 
     spec = spack.concretize.concretize_one(spec_str)
+    assert "c" in spec
     for s in spec.traverse():
-        assert s.satisfies(requirement_str)
+        if "c" in s and s.name not in ("gcc", "llvm"):
+            assert s.satisfies(requirement_str)
 
 
 @pytest.mark.parametrize(
@@ -522,8 +524,7 @@ packages:
 
     spec = spack.concretize.concretize_one("x")
     assert spec.satisfies(specific_exp)
-    for s in spec.traverse(root=False):
-        assert s.satisfies(generic_exp)
+    assert spec["y"].satisfies(generic_exp)
 
 
 @pytest.mark.parametrize("mpi_requirement", ["mpich", "mpich2", "zmpi"])
@@ -763,33 +764,23 @@ def test_skip_requirement_when_default_requirement_condition_cannot_be_met(
     assert "shared" not in s["callpath"].variants
 
 
-def test_requires_directive(concretize_scope, mock_packages):
-    compilers_yaml = pathlib.Path(concretize_scope) / "compilers.yaml"
-
-    # NOTE: target is omitted here so that the test works on aarch64, as well.
-    compilers_yaml.write_text(
-        """
-compilers::
-- compiler:
-    spec: gcc@12.0.0
-    paths:
-      cc: /usr/bin/clang-12
-      cxx: /usr/bin/clang++-12
-      f77: null
-      fc: null
-    operating_system: debian6
-    modules: []
-"""
-    )
-    spack.config.CONFIG.clear_caches()
-
+def test_requires_directive(mock_packages, config):
     # This package requires either clang or gcc
-    s = spack.concretize.concretize_one("requires_clang_or_gcc")
-    assert s.satisfies("%gcc@12.0.0")
+    s = spack.concretize.concretize_one("requires-clang-or-gcc")
+    assert s.satisfies("%gcc")
+    s = spack.concretize.concretize_one("requires-clang-or-gcc %gcc")
+    assert s.satisfies("%gcc")
+    s = spack.concretize.concretize_one("requires-clang-or-gcc %clang")
+    # Test both the real package (llvm) and its alias (clang)
+    assert s.satisfies("%llvm") and s.satisfies("%clang")
 
     # This package can only be compiled with clang
+    s = spack.concretize.concretize_one("requires-clang")
+    assert s.satisfies("%llvm")
+    s = spack.concretize.concretize_one("requires-clang %clang")
+    assert s.satisfies("%llvm")
     with pytest.raises(spack.error.SpackError, match="can only be compiled with Clang"):
-        spack.concretize.concretize_one("requires_clang")
+        spack.concretize.concretize_one("requires-clang %gcc")
 
 
 @pytest.mark.parametrize(
@@ -955,10 +946,9 @@ def test_requiring_package_on_multiple_virtuals(concretize_scope, mock_packages)
           all:
             prefer:
             - "%clang"
-            compiler: [gcc]
     """,
             "multivalue-variant",
-            ["%clang"],
+            ["%[virtuals=c] llvm"],
             ["%gcc"],
         ),
         (
@@ -969,8 +959,8 @@ def test_requiring_package_on_multiple_virtuals(concretize_scope, mock_packages)
                 - "%clang"
         """,
             "multivalue-variant %gcc",
-            ["%gcc"],
-            ["%clang"],
+            ["%[virtuals=c] gcc"],
+            ["%llvm"],
         ),
         # Test parsing objects instead of strings
         (
@@ -979,10 +969,9 @@ def test_requiring_package_on_multiple_virtuals(concretize_scope, mock_packages)
               all:
                 prefer:
                 - spec: "%clang"
-                compiler: [gcc]
         """,
             "multivalue-variant",
-            ["%clang"],
+            ["%[virtuals=c] llvm"],
             ["%gcc"],
         ),
         # Test using preferences on virtuals
@@ -1036,15 +1025,15 @@ def test_requiring_package_on_multiple_virtuals(concretize_scope, mock_packages)
 def test_strong_preferences_packages_yaml(
     packages_yaml, spec_str, expected, not_expected, concretize_scope, mock_packages
 ):
-    """Tests that "preferred" specs are stronger than usual preferences, but can be overridden."""
+    """Tests that strong preferences are taken into account for compilers."""
     update_packages_config(packages_yaml)
     s = spack.concretize.concretize_one(spec_str)
 
     for constraint in expected:
-        assert s.satisfies(constraint), constraint
+        assert s.satisfies(constraint)
 
     for constraint in not_expected:
-        assert not s.satisfies(constraint), constraint
+        assert not s.satisfies(constraint)
 
 
 @pytest.mark.parametrize(
@@ -1250,3 +1239,65 @@ def test_virtual_requirement_respects_any_of(concretize_scope, mock_packages):
 
     with pytest.raises(spack.error.SpackError):
         spack.concretize.concretize_one("mpileaks ^[virtuals=mpi] zmpi")
+
+
+@pytest.mark.parametrize(
+    "packages_yaml,expected_reuse,expected_contraints",
+    [
+        (
+            """
+packages:
+  all:
+    require:
+    - "%gcc"
+    """,
+            True,
+            # To minimize installed specs we reuse pkg-b compiler, since the requirement allows it
+            ["%gcc@9"],
+        ),
+        (
+            """
+packages:
+  all:
+    require:
+    - "%gcc@10"
+    """,
+            False,
+            ["%gcc@10"],
+        ),
+        (
+            """
+packages:
+  all:
+    require:
+    - "%gcc@9"
+    """,
+            True,
+            ["%gcc@9"],
+        ),
+    ],
+)
+@pytest.mark.regression("49847")
+def test_requirements_on_compilers_and_reuse(
+    concretize_scope, mock_packages, packages_yaml, expected_reuse, expected_contraints
+):
+    """Tests that we can require compilers with `%` in configuration files, and still get reuse
+    of specs (even though reused specs have no build dependency in the ASP encoding).
+    """
+    input_spec = "pkg-a"
+
+    reused_spec = spack.concretize.concretize_one("pkg-b@0.9 %gcc@9")
+    reused_nodes = list(reused_spec.traverse())
+    update_packages_config(packages_yaml)
+    root_specs = [Spec(input_spec)]
+
+    with spack.config.override("concretizer:reuse", True):
+        solver = spack.solver.asp.Solver()
+        setup = spack.solver.asp.SpackSolverSetup()
+        result, _, _ = solver.driver.solve(setup, root_specs, reuse=reused_nodes)
+        pkga = result.specs[0]
+    is_pkgb_reused = pkga["pkg-b"].dag_hash() == reused_spec.dag_hash()
+
+    assert is_pkgb_reused == expected_reuse
+    for c in expected_contraints:
+        assert pkga.satisfies(c)

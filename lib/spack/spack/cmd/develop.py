@@ -1,6 +1,7 @@
 # Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
+import argparse
 import os
 import shutil
 from typing import Optional
@@ -24,7 +25,7 @@ section = "environments"
 level = "long"
 
 
-def setup_parser(subparser):
+def setup_parser(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("-p", "--path", help="source location of package")
     subparser.add_argument("-b", "--build-directory", help="build directory for the package")
 
@@ -102,7 +103,7 @@ def assure_concrete_spec(env: spack.environment.Environment, spec: spack.spec.Sp
                     )
         else:
             # look up the maximum version so infintiy versions are preferred for develop
-            version = max(spec.package_class.versions.keys())
+            version = max(spack.repo.PATH.get_pkg_class(spec.fullname).versions.keys())
             tty.msg(f"Defaulting to highest version: {spec.name}@{version}")
     spec.versions = spack.version.VersionList([version])
 

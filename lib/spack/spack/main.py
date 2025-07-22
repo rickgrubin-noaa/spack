@@ -20,11 +20,12 @@ import shlex
 import signal
 import subprocess as sp
 import sys
+import tempfile
 import traceback
 import warnings
 from typing import List, Tuple
 
-import archspec.cpu
+import _vendoring.archspec.cpu
 
 import llnl.util.lang
 import llnl.util.tty as tty
@@ -35,12 +36,14 @@ from llnl.util.tty.log import log_output
 import spack
 import spack.cmd
 import spack.config
+import spack.environment
 import spack.environment as ev
+import spack.environment.environment
 import spack.error
-import spack.modules
 import spack.paths
 import spack.platforms
 import spack.repo
+import spack.solver.asp
 import spack.spec
 import spack.store
 import spack.util.debug
@@ -548,7 +551,6 @@ def setup_main_options(args):
         spack.config.CONFIG.scopes["command_line"].sections["repos"] = syaml.syaml_dict(
             [(key, [spack.paths.mock_packages_path])]
         )
-        spack.repo.PATH = spack.repo.create(spack.config.CONFIG)
 
     # If the user asked for it, don't check ssl certs.
     if args.insecure:
@@ -558,6 +560,9 @@ def setup_main_options(args):
     # Use the spack config command to handle parsing the config strings
     for config_var in args.config_vars or []:
         spack.config.add(fullpath=config_var, scope="command_line")
+
+    # In the main function we automatically fetch remote package repositories if necessary
+    spack.repo.enable_repo(spack.repo.RepoPath.from_config(spack.config.CONFIG))
 
     # On Windows10 console handling for ASCI/VT100 sequences is not
     # on by default. Turn on before we try to write to console
@@ -731,7 +736,7 @@ def _compatible_sys_types():
     """
     host_platform = spack.platforms.host()
     host_os = str(host_platform.default_operating_system())
-    host_target = archspec.cpu.host()
+    host_target = _vendoring.archspec.cpu.host()
     compatible_targets = [host_target] + host_target.ancestors
 
     compatible_archs = [
@@ -791,7 +796,7 @@ def print_setup_info(*info):
     # print environment module system if available. This can be expensive
     # on clusters, so skip it if not needed.
     if "modules" in info:
-        generic_arch = archspec.cpu.host().family
+        generic_arch = _vendoring.archspec.cpu.host().family
         module_spec = "environment-modules target={0}".format(generic_arch)
         specs = spack.store.STORE.db.query(module_spec)
         if specs:
@@ -871,22 +876,18 @@ def add_command_line_scopes(
     """
     for i, path in enumerate(command_line_scopes):
         name = f"cmd_scope_{i}"
-        scopes = ev.environment_path_scopes(name, path)
-        if scopes is None:
+        scope = ev.environment_path_scope(name, path)
+        if scope is None:
             if os.path.isdir(path):  # directory with config files
                 cfg.push_scope(
                     spack.config.DirectoryConfigScope(name, path, writable=False),
                     priority=ConfigScopePriority.CUSTOM,
                 )
-                spack.config._add_platform_scope(
-                    cfg, name, path, priority=ConfigScopePriority.CUSTOM, writable=False
-                )
                 continue
             else:
                 raise spack.error.ConfigError(f"Invalid configuration scope: {path}")
 
-        for scope in scopes:
-            cfg.push_scope(scope, priority=ConfigScopePriority.CUSTOM)
+        cfg.push_scope(scope, priority=ConfigScopePriority.CUSTOM)
 
 
 def _main(argv=None):
@@ -949,7 +950,10 @@ def _main(argv=None):
         try:
             env = spack.cmd.find_environment(args)
             if env:
-                ev.activate(env, args.use_env_repo)
+                # do not call activate here, cause it has a lot of expensive function calls to deal
+                # with mutation of spack.config.CONFIG -- but we are still building the config.
+                env.manifest.prepare_config_scope()
+                spack.environment.environment._active_environment = env
         except spack.config.ConfigFormatError as e:
             # print the context but delay this exception so that commands like
             # `spack config edit` can still work with a bad environment.
@@ -1047,6 +1051,10 @@ def main(argv=None):
     try:
         return _main(argv)
 
+    except spack.solver.asp.OutputDoesNotSatisfyInputError as e:
+        _handle_solver_bug(e)
+        return 1
+
     except spack.error.SpackError as e:
         tty.debug(e)
         e.die()  # gracefully die on any SpackErrors
@@ -1068,6 +1076,47 @@ def main(argv=None):
             raise
         tty.error(e)
         return 3
+
+
+def _handle_solver_bug(
+    e: spack.solver.asp.OutputDoesNotSatisfyInputError, out=sys.stderr, root=None
+) -> None:
+    # when the solver outputs specs that do not satisfy the input and spack is used as a command
+    # line tool, we dump the incorrect output specs to json so users can upload them in bug reports
+    wrong_output = [(input, output) for input, output in e.input_to_output if output is not None]
+    no_output = [input for input, output in e.input_to_output if output is None]
+    if no_output:
+        tty.error(
+            "internal solver error: the following specs were not solved:\n    - "
+            + "\n    - ".join(str(s) for s in no_output),
+            stream=out,
+        )
+    if wrong_output:
+        msg = "internal solver error: the following specs were concretized, but do not satisfy "
+        msg += "the input:\n"
+        for in_spec, out_spec in wrong_output:
+            msg += f"    - input: {in_spec}\n"
+            msg += f"      output: {out_spec.long_spec}\n"
+        msg += "\n    Please report a bug at https://github.com/spack/spack/issues"
+
+        # try to write the input/output specs to a temporary directory for bug reports
+        try:
+            tmpdir = tempfile.mkdtemp(prefix="spack-asp-", dir=root)
+            files = []
+            for i, (input, output) in enumerate(wrong_output, start=1):
+                in_file = os.path.join(tmpdir, f"input-{i}.json")
+                out_file = os.path.join(tmpdir, f"output-{i}.json")
+                files.append(in_file)
+                files.append(out_file)
+                with open(in_file, "w", encoding="utf-8") as f:
+                    input.to_json(f)
+                with open(out_file, "w", encoding="utf-8") as f:
+                    output.to_json(f)
+
+            msg += " and attach the following files:\n    - " + "\n    - ".join(files)
+        except Exception:
+            msg += "."
+        tty.error(msg, stream=out)
 
 
 class SpackCommandError(Exception):
