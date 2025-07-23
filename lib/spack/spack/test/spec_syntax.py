@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 import itertools
 import os
+import pathlib
 import re
 import sys
 
@@ -11,6 +12,8 @@ import pytest
 import spack.binary_distribution
 import spack.cmd
 import spack.concretize
+import spack.config
+import spack.llnl.util.filesystem as fs
 import spack.platforms.test
 import spack.repo
 import spack.solver.asp
@@ -314,7 +317,77 @@ def specfile_for(default_mock_concretization):
             ],
             "y+a~b+c~d+e~f",
         ),
+        # Things that evaluate to Spec()
+        # TODO: consider making these format to "*" instead of ""
         ("@:", [Token(SpecTokens.VERSION, value="@:")], r""),
+        ("*", [Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, value="*")], r""),
+        # virtual assignment on a dep of an anonymous spec (more of these later)
+        (
+            "%foo=bar",
+            [Token(SpecTokens.DEPENDENCY, value="%foo=bar", virtuals="foo", substitute="bar")],
+            "%foo=bar",
+        ),
+        (
+            "^foo=bar",
+            [Token(SpecTokens.DEPENDENCY, value="^foo=bar", virtuals="foo", substitute="bar")],
+            "^foo=bar",
+        ),
+        # anonymous dependencies with variants
+        (
+            "^*foo=bar",
+            [
+                Token(SpecTokens.DEPENDENCY, value="^"),
+                Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, value="*"),
+                Token(SpecTokens.KEY_VALUE_PAIR, value="foo=bar"),
+            ],
+            "^*foo=bar",
+        ),
+        (
+            "%*foo=bar",
+            [
+                Token(SpecTokens.DEPENDENCY, value="%"),
+                Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, value="*"),
+                Token(SpecTokens.KEY_VALUE_PAIR, value="foo=bar"),
+            ],
+            "%*foo=bar",
+        ),
+        (
+            "^*+foo",
+            [
+                Token(SpecTokens.DEPENDENCY, value="^"),
+                Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, value="*"),
+                Token(SpecTokens.BOOL_VARIANT, value="+foo"),
+            ],
+            "^+foo",
+        ),
+        (
+            "^*~foo",
+            [
+                Token(SpecTokens.DEPENDENCY, value="^"),
+                Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, value="*"),
+                Token(SpecTokens.BOOL_VARIANT, value="~foo"),
+            ],
+            "^~foo",
+        ),
+        (
+            "%*+foo",
+            [
+                Token(SpecTokens.DEPENDENCY, value="%"),
+                Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, value="*"),
+                Token(SpecTokens.BOOL_VARIANT, value="+foo"),
+            ],
+            "%+foo",
+        ),
+        (
+            "%*~foo",
+            [
+                Token(SpecTokens.DEPENDENCY, value="%"),
+                Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, value="*"),
+                Token(SpecTokens.BOOL_VARIANT, value="~foo"),
+            ],
+            "%~foo",
+        ),
+        # version range and list
         ("@1.6,1.2:1.4", [Token(SpecTokens.VERSION, value="@1.6,1.2:1.4")], r"@1.2:1.4,1.6"),
         (
             r"os=fe",  # Various translations associated with the architecture
@@ -581,7 +654,19 @@ def specfile_for(default_mock_concretization):
                 Token(SpecTokens.END_EDGE_PROPERTIES, value="]"),
                 Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, value="openmpi"),
             ],
-            "^[virtuals=mpi] openmpi",
+            "^mpi=openmpi",
+        ),
+        (
+            "^mpi=openmpi",
+            [
+                Token(
+                    SpecTokens.DEPENDENCY,
+                    value="^mpi=openmpi",
+                    virtuals="mpi",
+                    substitute="openmpi",
+                )
+            ],
+            "^mpi=openmpi",
         ),
         # Allow merging attributes, if deptypes match
         (
@@ -598,7 +683,21 @@ def specfile_for(default_mock_concretization):
                 Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, value="openmpi"),
                 Token(SpecTokens.BOOL_VARIANT, value="+bar"),
             ],
-            "^[virtuals=lapack,mpi] openmpi+bar+foo",
+            "^lapack,mpi=openmpi+bar+foo",
+        ),
+        (
+            "^lapack,mpi=openmpi+foo+bar",
+            [
+                Token(
+                    SpecTokens.DEPENDENCY,
+                    value="^lapack,mpi=openmpi",
+                    virtuals="lapack,mpi",
+                    substitute="openmpi",
+                ),
+                Token(SpecTokens.BOOL_VARIANT, value="+foo"),
+                Token(SpecTokens.BOOL_VARIANT, value="+bar"),
+            ],
+            "^lapack,mpi=openmpi+bar+foo",
         ),
         (
             "^[deptypes=link,build] zlib",
@@ -667,7 +766,15 @@ def specfile_for(default_mock_concretization):
                 Token(SpecTokens.END_EDGE_PROPERTIES, value="]"),
                 Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, value="gcc"),
             ],
-            "zlib %[virtuals=c] gcc",
+            "zlib %c=gcc",
+        ),
+        (
+            "zlib %c=gcc",
+            [
+                Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, "zlib"),
+                Token(SpecTokens.DEPENDENCY, value="%c=gcc", virtuals="c", substitute="gcc"),
+            ],
+            "zlib %c=gcc",
         ),
         (
             "zlib %[virtuals=c,cxx] gcc",
@@ -678,7 +785,17 @@ def specfile_for(default_mock_concretization):
                 Token(SpecTokens.END_EDGE_PROPERTIES, value="]"),
                 Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, value="gcc"),
             ],
-            "zlib %[virtuals=c,cxx] gcc",
+            "zlib %c,cxx=gcc",
+        ),
+        (
+            "zlib %c,cxx=gcc",
+            [
+                Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, "zlib"),
+                Token(
+                    SpecTokens.DEPENDENCY, value="%c,cxx=gcc", virtuals="c,cxx", substitute="gcc"
+                ),
+            ],
+            "zlib %c,cxx=gcc",
         ),
         (
             "zlib %[virtuals=c,cxx] gcc@14.1",
@@ -690,7 +807,18 @@ def specfile_for(default_mock_concretization):
                 Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, value="gcc"),
                 Token(SpecTokens.VERSION, value="@14.1"),
             ],
-            "zlib %[virtuals=c,cxx] gcc@14.1",
+            "zlib %c,cxx=gcc@14.1",
+        ),
+        (
+            "zlib %c,cxx=gcc@14.1",
+            [
+                Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, "zlib"),
+                Token(
+                    SpecTokens.DEPENDENCY, value="%c,cxx=gcc", virtuals="c,cxx", substitute="gcc"
+                ),
+                Token(SpecTokens.VERSION, value="@14.1"),
+            ],
+            "zlib %c,cxx=gcc@14.1",
         ),
         (
             "zlib %[virtuals=fortran] gcc@14.1 %[virtuals=c,cxx] clang",
@@ -706,7 +834,27 @@ def specfile_for(default_mock_concretization):
                 Token(SpecTokens.END_EDGE_PROPERTIES, value="]"),
                 Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, value="clang"),
             ],
-            "zlib %[virtuals=fortran] gcc@14.1 %[virtuals=c,cxx] clang",
+            "zlib %fortran=gcc@14.1 %c,cxx=clang",
+        ),
+        (
+            "zlib %fortran=gcc@14.1 %c,cxx=clang",
+            [
+                Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, "zlib"),
+                Token(
+                    SpecTokens.DEPENDENCY,
+                    value="%fortran=gcc",
+                    virtuals="fortran",
+                    substitute="gcc",
+                ),
+                Token(SpecTokens.VERSION, value="@14.1"),
+                Token(
+                    SpecTokens.DEPENDENCY,
+                    value="%c,cxx=clang",
+                    virtuals="c,cxx",
+                    substitute="clang",
+                ),
+            ],
+            "zlib %fortran=gcc@14.1 %c,cxx=clang",
         ),
         # test := and :== syntax for key value pairs
         (
@@ -736,6 +884,41 @@ def specfile_for(default_mock_concretization):
                 Token(SpecTokens.KEY_VALUE_PAIR, "target=x86_64"),
             ],
             "mvapich %gcc languages:='c,c++' arch=None-None-x86_64",
+        ),
+        # Test conditional dependencies
+        (
+            "foo ^[when='%c' virtuals=c] gcc",
+            [
+                Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, "foo"),
+                Token(SpecTokens.START_EDGE_PROPERTIES, "^["),
+                Token(SpecTokens.KEY_VALUE_PAIR, "when='%c'"),
+                Token(SpecTokens.KEY_VALUE_PAIR, "virtuals=c"),
+                Token(SpecTokens.END_EDGE_PROPERTIES, "]"),
+                Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, "gcc"),
+            ],
+            "foo ^[when='%c'] c=gcc",
+        ),
+        (
+            "foo ^[when='%c' virtuals=c]gcc",
+            [
+                Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, "foo"),
+                Token(SpecTokens.START_EDGE_PROPERTIES, "^["),
+                Token(SpecTokens.KEY_VALUE_PAIR, "when='%c'"),
+                Token(SpecTokens.KEY_VALUE_PAIR, "virtuals=c"),
+                Token(SpecTokens.END_EDGE_PROPERTIES, "]"),
+                Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, "gcc"),
+            ],
+            "foo ^[when='%c'] c=gcc",
+        ),
+        (
+            "foo ^[when='%c'] c=gcc",
+            [
+                Token(SpecTokens.UNQUALIFIED_PACKAGE_NAME, "foo"),
+                Token(SpecTokens.START_EDGE_PROPERTIES, "^["),
+                Token(SpecTokens.KEY_VALUE_PAIR, "when='%c'"),
+                Token(SpecTokens.END_EDGE_PROPERTIES, "] c=gcc", virtuals="c", substitute="gcc"),
+            ],
+            "foo ^[when='%c'] c=gcc",
         ),
     ],
 )
@@ -880,6 +1063,117 @@ def test_cli_spec_roundtrip(args, expected):
     specs = spack.cmd.parse_specs(args)
     output_string = " ".join(str(spec) for spec in specs)
     assert expected == output_string
+
+
+@pytest.mark.parametrize(
+    ["spec_str", "toolchain", "expected_roundtrip"],
+    [
+        (
+            "foo%my_toolchain",
+            {"my_toolchain": "%[when='%c' virtuals=c]gcc"},
+            ["foo %[when='%c'] c=gcc"],
+        ),
+        ("foo%my_toolchain", {"my_toolchain": "%[when='%c'] c=gcc"}, ["foo %[when='%c'] c=gcc"]),
+        (
+            "foo%my_toolchain",
+            {"my_toolchain": "+bar cflags=baz %[when='%c' virtuals=c]gcc"},
+            ["foo cflags=baz +bar %[when='%c'] c=gcc"],
+        ),
+        (
+            "foo%my_toolchain",
+            {"my_toolchain": "+bar cflags=baz %[when='%c']c=gcc"},
+            ["foo cflags=baz +bar %[when='%c'] c=gcc"],
+        ),
+        (
+            "foo%my_toolchain2",
+            {"my_toolchain2": "%[when='%c' virtuals=c]gcc %[when='+mpi' virtuals=mpi]mpich"},
+            ["foo %[when='%c'] c=gcc %[when='+mpi'] mpi=mpich"],
+        ),
+        (
+            "foo%my_toolchain2",
+            {"my_toolchain2": "%[when='%c'] c=gcc %[when='+mpi'] mpi=mpich"},
+            ["foo %[when='%c'] c=gcc %[when='+mpi'] mpi=mpich"],
+        ),
+        (
+            "foo%my_toolchain bar%my_toolchain2",
+            {
+                "my_toolchain": "%[when='%c' virtuals=c]gcc",
+                "my_toolchain2": "%[when='%c' virtuals=c]gcc %[when='+mpi' virtuals=mpi]mpich",
+            },
+            ["foo %[when='%c'] c=gcc", "bar %[when='%c'] c=gcc %[when='+mpi'] mpi=mpich"],
+        ),
+        (
+            "foo%my_toolchain bar%my_toolchain2",
+            {
+                "my_toolchain": "%[when='%c'] c=gcc",
+                "my_toolchain2": "%[when='%c'] c=gcc %[when='+mpi']mpi=mpich",
+            },
+            ["foo %[when='%c'] c=gcc", "bar %[when='%c'] c=gcc %[when='+mpi'] mpi=mpich"],
+        ),
+        (
+            "foo%my_toolchain2",
+            {
+                "my_toolchain2": [
+                    {"spec": "%[virtuals=c]gcc", "when": "%c"},
+                    {"spec": "%[virtuals=mpi]mpich", "when": "+mpi"},
+                ]
+            },
+            ["foo %[when='%c'] c=gcc %[when='+mpi'] mpi=mpich"],
+        ),
+        (
+            "foo%my_toolchain2",
+            {
+                "my_toolchain2": [
+                    {"spec": "%c=gcc", "when": "%c"},
+                    {"spec": "%mpi=mpich", "when": "+mpi"},
+                ]
+            },
+            ["foo %[when='%c'] c=gcc %[when='+mpi'] mpi=mpich"],
+        ),
+        (
+            "foo%my_toolchain2",
+            {"my_toolchain2": [{"spec": "%[virtuals=c]gcc %[virtuals=mpi]mpich", "when": "%c"}]},
+            ["foo %[when='%c'] c=gcc %[when='%c'] mpi=mpich"],
+        ),
+        (
+            "foo%my_toolchain2",
+            {"my_toolchain2": [{"spec": "%c=gcc %mpi=mpich", "when": "%c"}]},
+            ["foo %[when='%c'] c=gcc %[when='%c'] mpi=mpich"],
+        ),
+        # Test that we don't get caching wrong in the parser
+        (
+            "foo %gcc-mpich ^bar%gcc-mpich",
+            {
+                "gcc-mpich": [
+                    {"spec": "%[virtuals=c] gcc", "when": "%c"},
+                    {"spec": "%[virtuals=mpi] mpich", "when": "%mpi"},
+                ]
+            },
+            [
+                "foo %[when='%c'] c=gcc %[when='%mpi'] mpi=mpich "
+                "^bar %[when='%c'] c=gcc %[when='%mpi'] mpi=mpich"
+            ],
+        ),
+        (
+            "foo %gcc-mpich ^bar%gcc-mpich",
+            {
+                "gcc-mpich": [
+                    {"spec": "%c=gcc", "when": "%c"},
+                    {"spec": "%mpi=mpich", "when": "%mpi"},
+                ]
+            },
+            [
+                "foo %[when='%c'] c=gcc %[when='%mpi'] mpi=mpich "
+                "^bar %[when='%c'] c=gcc %[when='%mpi'] mpi=mpich"
+            ],
+        ),
+    ],
+)
+def test_parse_toolchain(spec_str, toolchain, expected_roundtrip, mutable_config):
+    spack.config.CONFIG.set("toolchains", toolchain)
+    parser = SpecParser(spec_str)
+    for expected in expected_roundtrip:
+        assert expected == str(parser.next_spec())
 
 
 @pytest.mark.parametrize(
@@ -1251,26 +1545,26 @@ def test_specfile_parsing(filename, regex):
     assert match.end() == len(filename)
 
 
-def test_parse_specfile_simple(specfile_for, tmpdir):
-    specfile = tmpdir.join("libdwarf.json")
+def test_parse_specfile_simple(specfile_for, tmp_path: pathlib.Path):
+    specfile = tmp_path / "libdwarf.json"
     s = specfile_for("libdwarf", specfile)
 
-    spec = SpecParser(specfile.strpath).next_spec()
+    spec = SpecParser(str(specfile)).next_spec()
     assert spec == s
 
     # Check we can mix literal and spec-file in text
-    specs = SpecParser(f"mvapich_foo {specfile.strpath}").all_specs()
+    specs = SpecParser(f"mvapich_foo {str(specfile)}").all_specs()
     assert len(specs) == 2
 
 
 @pytest.mark.parametrize("filename", ["libelf.yaml", "libelf.json"])
-def test_parse_filename_missing_slash_as_spec(specfile_for, tmpdir, filename):
+def test_parse_filename_missing_slash_as_spec(specfile_for, tmp_path: pathlib.Path, filename):
     """Ensure that libelf(.yaml|.json) parses as a spec, NOT a file."""
-    specfile = tmpdir.join(filename)
+    specfile = tmp_path / filename
     specfile_for(filename.split(".")[0], specfile)
 
     # Move to where the specfile is located so that libelf.yaml is there
-    with tmpdir.as_cwd():
+    with fs.working_dir(str(tmp_path)):
         specs = SpecParser("libelf.yaml").all_specs()
     assert len(specs) == 1
 
@@ -1290,71 +1584,70 @@ def test_parse_filename_missing_slash_as_spec(specfile_for, tmpdir, filename):
 
     # make sure that only happens when the spec ends in yaml
     with pytest.raises(spack.solver.asp.UnsatisfiableSpecError) as exc_info:
-        spack.concretize.concretize_one(SpecParser("builtin_mock.doesnotexist").next_spec())
+        spack.concretize.concretize_one("builtin_mock.doesnotexist")
     assert not exc_info.value.long_message or (
         "Did you mean to specify a filename with" not in exc_info.value.long_message
     )
 
 
-def test_parse_specfile_dependency(default_mock_concretization, tmpdir):
+def test_parse_specfile_dependency(default_mock_concretization, tmp_path: pathlib.Path):
     """Ensure we can use a specfile as a dependency"""
     s = default_mock_concretization("libdwarf")
 
-    specfile = tmpdir.join("libelf.json")
-    with specfile.open("w") as f:
+    specfile = tmp_path / "libelf.json"
+    with open(specfile, "w", encoding="utf-8") as f:
         f.write(s["libelf"].to_json())
 
     # Make sure we can use yaml path as dependency, e.g.:
     #     "spack spec libdwarf ^ /path/to/libelf.json"
-    spec = SpecParser(f"libdwarf ^ {specfile.strpath}").next_spec()
-    assert spec["libelf"] == s["libelf"]
+    spec = SpecParser(f"libdwarf ^ {str(specfile)}").next_spec()
+    assert spec and spec["libelf"] == s["libelf"]
 
-    with specfile.dirpath().as_cwd():
+    with fs.working_dir(str(tmp_path)):
         # Make sure this also works: "spack spec ./libelf.yaml"
-        spec = SpecParser(f"libdwarf^.{os.path.sep}{specfile.basename}").next_spec()
-        assert spec["libelf"] == s["libelf"]
+        spec = SpecParser(f"libdwarf^.{os.path.sep}{specfile.name}").next_spec()
+        assert spec and spec["libelf"] == s["libelf"]
 
         # Should also be accepted: "spack spec ../<cur-dir>/libelf.yaml"
         spec = SpecParser(
-            f"libdwarf^..{os.path.sep}{specfile.dirpath().basename}"
-            f"{os.path.sep}{specfile.basename}"
+            f"libdwarf^..{os.path.sep}{specfile.parent.name}" f"{os.path.sep}{specfile.name}"
         ).next_spec()
-        assert spec["libelf"] == s["libelf"]
+        assert spec and spec["libelf"] == s["libelf"]
 
 
-def test_parse_specfile_relative_paths(specfile_for, tmpdir):
-    specfile = tmpdir.join("libdwarf.json")
+def test_parse_specfile_relative_paths(specfile_for, tmp_path: pathlib.Path):
+    specfile = tmp_path / "libdwarf.json"
     s = specfile_for("libdwarf", specfile)
 
-    basename = specfile.basename
-    parent_dir = specfile.dirpath()
+    basename = specfile.name
+    parent_dir = specfile.parent
 
-    with parent_dir.as_cwd():
+    with fs.working_dir(str(parent_dir)):
         # Make sure this also works: "spack spec ./libelf.yaml"
         spec = SpecParser(f".{os.path.sep}{basename}").next_spec()
         assert spec == s
 
         # Should also be accepted: "spack spec ../<cur-dir>/libelf.yaml"
-        spec = SpecParser(
-            f"..{os.path.sep}{parent_dir.basename}{os.path.sep}{basename}"
-        ).next_spec()
+        spec = SpecParser(f"..{os.path.sep}{parent_dir.name}{os.path.sep}{basename}").next_spec()
         assert spec == s
 
         # Should also handle mixed clispecs and relative paths, e.g.:
         #     "spack spec mvapich_foo ../<cur-dir>/libelf.yaml"
         specs = SpecParser(
-            f"mvapich_foo ..{os.path.sep}{parent_dir.basename}{os.path.sep}{basename}"
+            f"mvapich_foo ..{os.path.sep}{parent_dir.name}{os.path.sep}{basename}"
         ).all_specs()
         assert len(specs) == 2
         assert specs[1] == s
 
 
-def test_parse_specfile_relative_subdir_path(specfile_for, tmpdir):
-    specfile = tmpdir.mkdir("subdir").join("libdwarf.json")
+def test_parse_specfile_relative_subdir_path(specfile_for, tmp_path: pathlib.Path):
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    specfile = subdir / "libdwarf.json"
     s = specfile_for("libdwarf", specfile)
 
-    with tmpdir.as_cwd():
-        spec = SpecParser(f"subdir{os.path.sep}{specfile.basename}").next_spec()
+    with fs.working_dir(str(tmp_path)):
+        spec = SpecParser(f"subdir{os.path.sep}{specfile.name}").next_spec()
         assert spec == s
 
 

@@ -9,8 +9,6 @@ from typing import Dict, Optional, Union
 
 import pytest
 
-from llnl.util.filesystem import working_dir
-
 import spack.cmd.repo
 import spack.config
 import spack.environment as ev
@@ -18,6 +16,7 @@ import spack.main
 import spack.repo
 import spack.repo_migrate
 from spack.error import SpackError
+from spack.llnl.util.filesystem import working_dir
 from spack.main import SpackCommand
 from spack.util.executable import Executable
 
@@ -51,7 +50,7 @@ def test_create_add_list_remove(mutable_config, tmp_path: pathlib.Path):
 
 
 def test_env_repo_path_vars_substitution(
-    tmpdir, install_mockery, mutable_mock_env_path, monkeypatch
+    tmp_path: pathlib.Path, install_mockery, mutable_mock_env_path, monkeypatch
 ):
     """Test Spack correctly substitues repo paths with environment variables when creating an
     environment from a manifest file."""
@@ -59,8 +58,9 @@ def test_env_repo_path_vars_substitution(
     monkeypatch.setenv("CUSTOM_REPO_PATH", ".")
 
     # setup environment from spack.yaml
-    envdir = tmpdir.mkdir("env")
-    with envdir.as_cwd():
+    envdir = tmp_path / "env"
+    envdir.mkdir()
+    with working_dir(str(envdir)):
         with open("spack.yaml", "w", encoding="utf-8") as f:
             f.write(
                 """\
@@ -262,6 +262,12 @@ class MockDescriptor(spack.repo.RepoDescriptor):
 
     def initialize(self, fetch=True, git=None) -> None:
         self.initialized = True
+
+    def get_commit(self, git: Optional[Executable] = None):
+        pass
+
+    def update(self, git: Optional[Executable] = None, remote: Optional[str] = "origin") -> None:
+        pass
 
     def construct(self, cache, overrides=None):
         assert self.initialized, "MockDescriptor must be initialized before construction"
@@ -547,7 +553,7 @@ def test_add_repo_git_url_with_single_repo_path_new(monkeypatch):
     assert key == "test_git_repo"
 
 
-def test_add_repo_local_path_success(monkeypatch, tmp_path):
+def test_add_repo_local_path_success(monkeypatch, tmp_path: pathlib.Path):
     """Test successful addition of a local repository."""
     config = make_repo_config()
 
@@ -574,7 +580,7 @@ def test_add_repo_local_path_success(monkeypatch, tmp_path):
     assert repos_config["test_local_repo"] == str(tmp_path)
 
 
-def test_add_repo_auto_name_from_namespace(monkeypatch, tmp_path):
+def test_add_repo_auto_name_from_namespace(monkeypatch, tmp_path: pathlib.Path):
     """Test successful addition of a repository with auto-generated name from namespace."""
     config = make_repo_config()
 
@@ -599,7 +605,7 @@ def test_add_repo_auto_name_from_namespace(monkeypatch, tmp_path):
     assert repos_config["auto_name_repo"] == str(tmp_path)
 
 
-def test_add_repo_partial_repo_construction_warning(monkeypatch, tmp_path, capsys):
+def test_add_repo_partial_repo_construction_warning(monkeypatch, capsys):
     """Test that _add_repo issues warnings for repos that can't be constructed but
     succeeds if at least one can be."""
 
@@ -692,3 +698,137 @@ def test_repo_set_does_not_work_on_local_path(mutable_config):
     spack.config.set("repos", {"local-repo": "/local/path"}, scope="site")
     with pytest.raises(SpackError, match="is not a git repository"):
         repo("set", "--destination", "/some/path", "local-repo")
+
+
+def test_add_repo_prepends_instead_of_appends(monkeypatch, tmp_path: pathlib.Path):
+    """Test that newly added repositories are prepended to the configuration,
+    giving them higher priority than existing repositories."""
+    existing_path = str(tmp_path / "existing_repo")
+    new_path = str(tmp_path / "new_repo")
+
+    config = make_repo_config({"existing_repo": existing_path})
+
+    def mock_parse_config_descriptor(name, entry, lock):
+        return MockDescriptor({new_path: MockRepo("new_repo")})
+
+    monkeypatch.setattr(spack.repo, "parse_config_descriptor", mock_parse_config_descriptor)
+
+    # Add a new repository
+    key = spack.cmd.repo._add_repo(
+        path_or_repo=new_path,
+        name="new_repo",
+        scope=None,
+        paths=[],
+        destination=None,
+        config=config,
+    )
+
+    assert key == "new_repo"
+
+    # Check that the new repository is first in the configuration
+    repos_config = config.get("repos", scope=None)
+    repo_names = list(repos_config.keys())
+
+    # The new repository should be first (highest priority)
+    assert repo_names == ["new_repo", "existing_repo"]
+    assert repos_config["new_repo"] == new_path
+    assert repos_config["existing_repo"] == existing_path
+
+
+def test_repo_list_format_flags(
+    mutable_config: spack.config.Configuration, tmp_path: pathlib.Path
+):
+    """Test the --config-names and --namespaces flags for repo list command"""
+    # Fake a git monorepo with two package repositories
+    (tmp_path / "monorepo" / ".git").mkdir(parents=True)
+    repo("create", str(tmp_path / "monorepo"), "repo_one")
+    repo("create", str(tmp_path / "monorepo"), "repo_two")
+
+    mutable_config.set(
+        "repos",
+        {
+            # git repo that provides two package repositories
+            "monorepo": {
+                "git": "https://example.com/monorepo.git",
+                "destination": str(tmp_path / "monorepo"),
+                "paths": ["spack_repo/repo_one", "spack_repo/repo_two"],
+            },
+            # git repo that is not yet cloned
+            "uninitialized": {
+                "git": "https://example.com/uninitialized.git",
+                "destination": str(tmp_path / "uninitialized"),
+            },
+            # invalid local repository
+            "misconfigured": str(tmp_path / "misconfigured"),
+        },
+        scope="site",
+    )
+
+    # Test default table format, which shows one line per package repository
+    table_output = repo("list", output=str)
+    assert "[+] repo_one" in table_output
+    assert "[+] repo_two" in table_output
+    assert " -  uninitialized" in table_output
+    assert "[-] misconfigured" in table_output
+
+    # Test --namespaces flag
+    namespaces_output = repo("list", "--namespaces", output=str)
+    assert namespaces_output.strip().split("\n") == ["repo_one", "repo_two"]
+
+    # Test --names flag
+    config_names_output = repo("list", "--names", output=str)
+    config_names_lines = config_names_output.strip().split("\n")
+    assert config_names_lines == ["monorepo", "uninitialized", "misconfigured"]
+
+
+@pytest.mark.parametrize(
+    "repo_name,flags",
+    [
+        ("new_repo", []),
+        ("new_repo", ["--branch", "develop"]),
+        ("new_repo", ["--branch", "develop", "--remote", "upstream"]),
+        ("new_repo", ["--tag", "v1.0"]),
+        ("new_repo", ["--commit", "abc123"]),
+    ],
+)
+def test_repo_update_successful_flags(monkeypatch, mutable_config, repo_name, flags):
+    """Test repo update with flags."""
+
+    def mock_parse_config_descriptor(name, entry, lock):
+        return MockDescriptor({"/path": MockRepo("new_repo")})
+
+    monkeypatch.setattr(spack.repo, "parse_config_descriptor", mock_parse_config_descriptor)
+    monkeypatch.setattr(spack.repo, "RemoteRepoDescriptor", MockDescriptor)
+
+    repos_config = spack.config.get("repos")
+    repos_config[repo_name] = {"git": "https://github.com/example/repo.git"}
+    spack.config.set("repos", repos_config)
+
+    repo("update", repo_name, *flags)
+
+    # check that the branch,tag,commit was updated in the configuration
+    repos_config = spack.config.get("repos")
+
+    if "--branch" in flags:
+        assert repos_config[repo_name]["branch"] == "develop"
+
+    if "--tag" in flags:
+        assert repos_config[repo_name]["tag"] == "v1.0"
+
+    if "--commit" in flags:
+        assert repos_config[repo_name]["commit"] == "abc123"
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--branch", "develop"],
+        ["--branch", "develop", "new_repo_1", "new_repo_2"],
+        ["--branch", "develop", "unknown_repo"],
+    ],
+)
+def test_repo_update_invalid_flags(monkeypatch, mutable_config, flags):
+    """Test repo update with invalid flags."""
+
+    with pytest.raises(SpackError):
+        repo("update", *flags)

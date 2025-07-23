@@ -16,7 +16,6 @@ import pathlib
 import pprint
 import re
 import sys
-import types
 import typing
 import warnings
 from contextlib import contextmanager
@@ -34,12 +33,7 @@ from typing import (
     Union,
 )
 
-import _vendoring.archspec.cpu
-
-import llnl.util.lang
-import llnl.util.tty as tty
-from llnl.util.filesystem import current_file_position
-from llnl.util.lang import elide_list
+import spack.vendor.archspec.cpu
 
 import spack
 import spack.binary_distribution
@@ -50,6 +44,8 @@ import spack.deptypes as dt
 import spack.detection
 import spack.environment as ev
 import spack.error
+import spack.llnl.util.lang
+import spack.llnl.util.tty as tty
 import spack.package_base
 import spack.package_prefs
 import spack.patch
@@ -70,6 +66,8 @@ import spack.version as vn
 import spack.version.git_ref_lookup
 from spack import traverse
 from spack.compilers.libraries import CompilerPropertyDetector
+from spack.llnl.util.filesystem import current_file_position
+from spack.llnl.util.lang import elide_list
 from spack.util.file_cache import FileCache
 
 from .core import (
@@ -261,25 +259,6 @@ def build_criteria_names(costs, arg_tuples):
         criteria.append((costs[indices[i]], costs[indices[b]], name))
 
     return criteria
-
-
-def issequence(obj):
-    if isinstance(obj, str):
-        return False
-    return isinstance(obj, (collections.abc.Sequence, types.GeneratorType))
-
-
-def listify(args):
-    if len(args) == 1 and issequence(args[0]):
-        return list(args[0])
-    return list(args)
-
-
-def packagize(pkg):
-    if isinstance(pkg, str):
-        return spack.repo.PATH.get_pkg_class(pkg)
-    else:
-        return pkg
 
 
 def specify(spec):
@@ -913,7 +892,7 @@ class ConcretizationCache:
         return None, None
 
 
-CONC_CACHE: ConcretizationCache = llnl.util.lang.Singleton(
+CONC_CACHE: ConcretizationCache = spack.llnl.util.lang.Singleton(
     lambda: ConcretizationCache()
 )  # type: ignore
 
@@ -1152,7 +1131,7 @@ class PyclingoDriver:
             solve, and the internal statistics from clingo.
         """
         # avoid circular import
-        import spack.bootstrap.core
+        from spack.bootstrap.core import ensure_winsdk_external_or_raise
 
         output = output or DEFAULT_OUTPUT_CONFIGURATION
         timer = spack.util.timer.Timer()
@@ -1165,7 +1144,7 @@ class PyclingoDriver:
         # bootstrap config scope
         if sys.platform == "win32":
             tty.debug("Ensuring basic dependencies {win-sdk, wgl} available")
-            spack.bootstrap.core.ensure_winsdk_external_or_raise()
+            ensure_winsdk_external_or_raise()
         control_files = ["concretize.lp", "heuristic.lp", "display.lp", "direct_dependency.lp"]
         if not setup.concretize_everything:
             control_files.append("when_possible.lp")
@@ -1241,7 +1220,9 @@ class PyclingoDriver:
             with self.control.solve(**solve_kwargs, async_=True) as handle:
                 finished = handle.wait(time_limit)
                 if not finished:
-                    specs_str = ", ".join(llnl.util.lang.elide_list([str(s) for s in specs], 4))
+                    specs_str = ", ".join(
+                        spack.llnl.util.lang.elide_list([str(s) for s in specs], 4)
+                    )
                     header = (
                         f"Spack is taking more than {time_limit} seconds to solve for {specs_str}"
                     )
@@ -1399,12 +1380,17 @@ class ConstraintOrigin(enum.Enum):
     result.
     """
 
+    CONDITIONAL_SPEC = 0
     DEPENDS_ON = 1
     REQUIRE = 2
 
     @staticmethod
     def _SUFFIXES() -> Dict["ConstraintOrigin", str]:
-        return {ConstraintOrigin.DEPENDS_ON: "_dep", ConstraintOrigin.REQUIRE: "_req"}
+        return {
+            ConstraintOrigin.CONDITIONAL_SPEC: "_cond",
+            ConstraintOrigin.DEPENDS_ON: "_dep",
+            ConstraintOrigin.REQUIRE: "_req",
+        }
 
     @staticmethod
     def append_type_suffix(pkg_id: str, kind: "ConstraintOrigin") -> str:
@@ -1616,7 +1602,7 @@ class SpackSolverSetup:
         target = spec.architecture.target
 
         # Check if the target is a concrete target
-        if str(target) in _vendoring.archspec.cpu.TARGETS:
+        if str(target) in spack.vendor.archspec.cpu.TARGETS:
             return [single_target_fn(spec.name, target)]
 
         self.target_constraints.add(target)
@@ -2236,6 +2222,10 @@ class SpackSolverSetup:
                         msg=f"{input_spec} is a requirement for package {pkg_name}",
                         context=context,
                     )
+
+                    # Conditions don't handle conditional dependencies directly
+                    # Those are handled separately here
+                    self.generate_conditional_dep_conditions(spec, member_id)
                 except Exception as e:
                     # Do not raise if the rule comes from the 'all' subsection, since usability
                     # would be impaired. If a rule does not apply for a specific package, just
@@ -2602,6 +2592,10 @@ class SpackSolverSetup:
         # Dependencies
         edge_clauses = []
         for dspec in spec.edges_to_dependencies():
+            # Ignore conditional dependencies, they are handled by caller
+            if dspec.when != spack.spec.Spec():
+                continue
+
             dep = dspec.spec
 
             if spec.concrete:
@@ -2751,7 +2745,7 @@ class SpackSolverSetup:
                         )
                     version_defs.extend(matches)
 
-            for weight, vdef in enumerate(llnl.util.lang.dedupe(version_defs)):
+            for weight, vdef in enumerate(spack.llnl.util.lang.dedupe(version_defs)):
                 self.declared_versions[pkg_name].append(
                     DeclaredVersion(version=vdef, idx=weight, origin=Provenance.PACKAGES_YAML)
                 )
@@ -2797,7 +2791,7 @@ class SpackSolverSetup:
                         compiler_name, compiler_version.dotted_numeric_string
                     )
                 supported.append(target)
-            except _vendoring.archspec.cpu.UnsupportedMicroarchitecture:
+            except spack.vendor.archspec.cpu.UnsupportedMicroarchitecture:
                 continue
             except ValueError:
                 continue
@@ -2862,7 +2856,7 @@ class SpackSolverSetup:
             if not spec.architecture or not spec.architecture.target:
                 continue
 
-            target = _vendoring.archspec.cpu.TARGETS.get(spec.target.name)
+            target = spack.vendor.archspec.cpu.TARGETS.get(spec.target.name)
             if not target:
                 self.target_ranges(spec, None)
                 continue
@@ -2874,7 +2868,7 @@ class SpackSolverSetup:
                         candidate_targets.append(ancestor)
 
         platform = spack.platforms.host()
-        uarch = _vendoring.archspec.cpu.TARGETS.get(platform.default)
+        uarch = spack.vendor.archspec.cpu.TARGETS.get(platform.default)
         best_targets = {uarch.family.name}
         for compiler in self.possible_compilers:
             supported = self._supported_targets(compiler.name, compiler.version, candidate_targets)
@@ -2992,7 +2986,7 @@ class SpackSolverSetup:
                 return [single_constraint]
 
             t_min, _, t_max = single_constraint.partition(":")
-            for test_target in _vendoring.archspec.cpu.TARGETS.values():
+            for test_target in spack.vendor.archspec.cpu.TARGETS.values():
                 # Check lower bound
                 if t_min and not t_min <= test_target:
                     continue
@@ -3140,20 +3134,6 @@ class SpackSolverSetup:
         self.possible_virtuals = node_counter.possible_virtuals()
         self.pkgs = node_counter.possible_dependencies()
         self.libcs = sorted(all_libcs())  # type: ignore[type-var]
-
-        # Fail if we already know an unreachable node is requested
-        for spec in specs:
-            # concrete roots don't need their dependencies verified
-            if spec.concrete:
-                continue
-
-            missing_deps = [
-                str(d)
-                for d in spec.traverse()
-                if d.name not in self.pkgs and not spack.repo.PATH.is_virtual(d.name)
-            ]
-            if missing_deps:
-                raise spack.spec.InvalidDependencyError(spec.name, missing_deps)
 
         for node in traverse.traverse_nodes(specs):
             if node.namespace is not None:
@@ -3389,10 +3369,60 @@ class SpackSolverSetup:
             cache[imposed_spec_key] = (effect_id, requirements)
             self.gen.fact(fn.pkg_fact(spec.name, fn.condition_effect(condition_id, effect_id)))
 
+            # Create subcondition with any conditional dependencies
+            # self.spec_clauses does not do anything with conditional
+            # dependencies
+            self.generate_conditional_dep_conditions(spec, condition_id)
+
             if self.concretize_everything:
                 self.gen.fact(fn.solve_literal(trigger_id))
 
+        # Trigger rules are needed to allow conditional specs
+        self.trigger_rules()
         self.effect_rules()
+
+    def generate_conditional_dep_conditions(self, spec: spack.spec.Spec, condition_id: int):
+        """Generate a subcondition in the trigger for any conditional dependencies.
+
+        Dependencies are always modeled by a condition. For conditional dependencies,
+        the when-spec is added as a subcondition of the trigger to ensure the dependency
+        is only activated when the subcondition holds.
+        """
+        for dspec in spec.traverse_edges():
+            # Ignore unconditional deps
+            if dspec.when == spack.spec.Spec():
+                continue
+
+            # Cannot use "virtual_node" attr as key for condition
+            # because reused specs do not track virtual nodes.
+            # Instead, track whether the parent uses the virtual
+            def virtual_handler(input_spec, requirements):
+                ret = remove_facts("virtual_node")(input_spec, requirements)
+                for edge in input_spec.traverse_edges(root=False, cover="edges"):
+                    if spack.repo.PATH.is_virtual(edge.spec.name):
+                        ret.append(fn.attr("uses_virtual", edge.parent.name, edge.spec.name))
+                return ret
+
+            context = ConditionContext()
+            context.source = ConstraintOrigin.append_type_suffix(
+                dspec.parent.name, ConstraintOrigin.CONDITIONAL_SPEC
+            )
+            # Default is to remove node-like attrs, override here
+            context.transform_required = virtual_handler
+            context.transform_imposed = lambda x, y: y
+
+            try:
+                subcondition_id = self.condition(
+                    dspec.when,
+                    spack.spec.Spec(dspec.format(unconditional=True)),
+                    required_name=dspec.parent.name,
+                    context=context,
+                    msg=f"Conditional dependency in ^[when={dspec.when}]{dspec.spec}",
+                )
+                self.gen.fact(fn.subcondition(subcondition_id, condition_id))
+            except vt.UnknownVariantError as e:
+                # A variant in the 'when=' condition can't apply to the parent of the edge
+                tty.debug(f"[{__name__}] cannot emit subcondition for {dspec.format()}: {e}")
 
     def validate_and_define_versions_from_requirements(
         self, *, allow_deprecated: bool, require_checksum: bool
@@ -3841,6 +3871,7 @@ class SpecBuilder:
                 r"^package_hash$",
                 r"^root$",
                 r"^track_dependencies$",
+                r"^uses_virtual$",
                 r"^variant_default_value_from_cli$",
                 r"^virtual_node$",
                 r"^virtual_on_incoming_edges$",
@@ -3954,7 +3985,7 @@ class SpecBuilder:
             # More-general criteria like "depends on Python" pulls in things
             # we don't want to apply this logic to (in particular LLVM, which
             # is now a common external because that's how we detect Clang)
-            and any([c.__name__ == "PythonPackage" for c in package.__class__.__mro__])
+            and any([c.__name__ == "PythonExtension" for c in package.__class__.__mro__])
         ):
             candidate_python_to_attach = self._specs.get(SpecBuilder.make_node(pkg="python"))
             _attach_python_to_external(package, extendee_spec=candidate_python_to_attach)
@@ -4257,23 +4288,25 @@ def _specs_with_commits(spec):
     if not spec.package.needs_commit(spec.version):
         return
 
-    # check integrity of specified commit shas
-    if "commit" in spec.variants:
-        invalid_commit_msg = (
-            f"Internal Error: {spec.name}'s assigned commit {spec.variants['commit'].value}"
-            " does not meet commit syntax requirements."
-        )
-        assert vn.is_git_commit_sha(spec.variants["commit"].value), invalid_commit_msg
+    if isinstance(spec.version, spack.version.GitVersion):
+        if "commit" not in spec.variants and spec.version.commit_sha:
+            spec.variants["commit"] = vt.SingleValuedVariant("commit", spec.version.commit_sha)
 
     spec.package.resolve_binary_provenance()
-    # TODO(psakiev) assert commit is associated with ref
 
-    if isinstance(spec.version, spack.version.GitVersion):
-        if not spec.version.commit_sha:
-            # TODO(psakiev) this will be a failure when commit look up is automated
-            return
-        if "commit" not in spec.variants:
-            spec.variants["commit"] = vt.SingleValuedVariant("commit", spec.version.commit_sha)
+    if "commit" not in spec.variants:
+        tty.warn(
+            f"Unable to resolve the git commit for {spec.name}. "
+            "An installation of this binary won't have complete binary provenance."
+        )
+        return
+
+    # check integrity of user specified commit shas
+    invalid_commit_msg = (
+        f"Internal Error: {spec.name}'s assigned commit {spec.variants['commit'].value}"
+        " does not meet commit syntax requirements."
+    )
+    assert vn.is_git_commit_sha(spec.variants["commit"].value), invalid_commit_msg
 
 
 def _attach_python_to_external(
@@ -4312,7 +4345,7 @@ def _attach_python_to_external(
                     if not python.architecture.os:
                         python.architecture.os = platform.default_operating_system()
                     if not python.architecture.target:
-                        python.architecture.target = _vendoring.archspec.cpu.host().family.name
+                        python.architecture.target = spack.vendor.archspec.cpu.host().family.name
 
                 python.external_path = dependent_package.spec.external_path
                 python._mark_concrete()
@@ -4408,11 +4441,11 @@ def _inject_patches_variant(root: spack.spec.Spec) -> None:
 
         edge_patches: List[spack.patch.Patch] = []
         for cond, deps_by_name in pkg_deps.items():
-            if not dspec.parent.satisfies(cond):
-                continue
-
             dependency = deps_by_name.get(dspec.spec.name)
             if not dependency:
+                continue
+
+            if not dspec.parent.satisfies(cond):
                 continue
 
             for pcond, patch_list in dependency.patches.items():
@@ -4787,7 +4820,11 @@ class Solver:
                     if spack.repo.PATH.is_virtual(s.name):
                         continue
                     # Error if direct dependencies cannot be satisfied
-                    deps = {edge.spec.name for edge in s.edges_to_dependencies() if edge.direct}
+                    deps = {
+                        edge.spec.name
+                        for edge in s.edges_to_dependencies()
+                        if edge.direct and edge.when == spack.spec.Spec()
+                    }
                     if deps:
                         graph = analyzer.possible_dependencies(
                             s, allowed_deps=dt.ALL, transitive=False

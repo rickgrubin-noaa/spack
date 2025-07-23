@@ -289,10 +289,6 @@ error(100, "Package '{0}' needs the deprecated version '{1}', and this is not al
      not concrete(node(ID, Package)),
      pkg_fact(Package, deprecated_version(Version)).
 
-possible_version_weight(node(ID, Package), Weight)
- :- attr("version", node(ID, Package), Version),
-    pkg_fact(Package, version_declared(Version, Weight)).
-
 % we can't use the weight for an external version if we don't use the
 % corresponding external spec.
 :- attr("version", node(ID, Package), Version),
@@ -447,8 +443,24 @@ trigger_and_effect(Package, TriggerID, EffectID)
 
 % condition_holds(ID, node(ID, Package)) implies all imposed_constraints, unless do_not_impose(ID, node(ID, Package))
 % is derived. This allows imposed constraints to be canceled in special cases.
+
+% Effects of direct conditions hold if the trigger holds
 impose(EffectID, node(X, Package))
-  :- trigger_and_effect(Package, TriggerID, EffectID),
+  :- pkg_fact(Package, condition_effect(ConditionID, EffectID)),
+     not subcondition(ConditionID, _),
+     trigger_and_effect(Package, TriggerID, EffectID),
+     trigger_node(TriggerID, _, node(X, Package)),
+     trigger_condition_holds(TriggerID, node(X, Package)),
+     not do_not_impose(EffectID, node(X, Package)).
+
+% Effects of subconditions hold if the trigger holds and the
+% primary condition holds
+impose(EffectID, node(X, Package))
+  :- pkg_fact(Package, condition_effect(SubconditionId, EffectID)),
+     subcondition(SubconditionID, ConditionID),
+     condition_holds(ConditionID, ConditionNode),
+     condition_set(ConditionNode, node(X, Package)),
+     trigger_and_effect(Package, TriggerID, EffectID),
      trigger_node(TriggerID, _, node(X, Package)),
      trigger_condition_holds(TriggerID, node(X, Package)),
      not do_not_impose(EffectID, node(X, Package)).
@@ -601,6 +613,18 @@ error(100, "External {0} cannot satisfy both {1} and {2}", BuildDependency, Lite
    Parent == BuildDependency,
    external(node(X, Parent)).
 
+% If a virtual is needed only to build a package, its provider can be considered a build requirement
+1 { virtual_build_requirement(ParentNode, node(0..Y-1, Virtual)) : max_dupes(Virtual, Y) } 1
+  :- attr("dependency_holds", ParentNode, Virtual, "build"),
+     not attr("dependency_holds", ParentNode, Virtual,"link"),
+     not attr("dependency_holds", ParentNode, Virtual,"run"),
+     virtual(Virtual).
+
+attr("virtual_node", VirtualNode)  :- virtual_build_requirement(ParentNode, VirtualNode).
+{ build_requirement(ParentNode, ProviderNode) } :-
+  virtual_build_requirement(ParentNode, VirtualNode),
+  provider(ProviderNode, VirtualNode).
+
 % From cli we can have literal expressions like:
 %
 % root %gcc@12.0 ^dep %gcc@11.2
@@ -654,6 +678,16 @@ virtual_condition_holds(node(Y, A2), Virtual)
      attr("virtual_on_edge", node(X, A1), node(Y, A2), Virtual),
      not build(node(X, A1)).
 
+% Simplified virtual information for conditionl requirements in
+% conditional dependencies
+% Most specs track virtuals on edges
+attr("uses_virtual", PackageNode, Virtual) :-
+  attr("virtual_on_edge", PackageNode, _, Virtual).
+
+% Reused specs don't track a real edge to build-only deps
+attr("uses_virtual", PackageNode, Virtual) :-
+  attr("virtual_on_build_edge", PackageNode, _, Virtual).
+
 % we cannot have additional variant values when we are working with concrete specs
 :- attr("node", node(ID, Package)),
    attr("hash", node(ID, Package), Hash),
@@ -669,6 +703,7 @@ virtual_condition_holds(node(Y, A2), Virtual)
    internal_error("imposed hash without imposing all flag values").
 
 #defined condition/2.
+#defined subcondition/2.
 #defined condition_requirement/3.
 #defined condition_requirement/4.
 #defined condition_requirement/5.
@@ -975,6 +1010,14 @@ attr("external_spec_selected", node(ID, Package), LocalIndex) :-
     attr("node", node(ID, Package)),
     not attr("hash", node(ID, Package), _).
 
+% Allow clingo not to impose an external condition. This is needed to allow solving
+% for externals that are indistinguishable besides compiler "metadata" e.g.
+% mpich@4.2 %gcc vs. mpich@4.2 %clang
+{ do_not_impose(EffectID, node(X, Package)) } :-
+  trigger_condition_holds(TriggerID, node(X, Package)),
+  trigger_and_effect(Package, TriggerID, EffectID),
+  imposed_constraint(EffectID, "external_conditions_hold", Package, _).
+
 % Account for compiler annotation on externals
 :- not attr("root", ExternalNode),
    attr("external_build_requirement", ExternalNode, node_requirement("node", Compiler)),
@@ -1009,11 +1052,11 @@ activate_requirement(node(ID, Package), X) :-
   condition_holds(Y, node(ID, Package)),
   requirement_conditional(Package, X, Y).
 
-requirement_group_satisfied(node(ID, Package), X) :-
-  1 { condition_holds(Y, node(ID, Package)) : requirement_group_member(Y, Package, X) } 1,
-  requirement_policy(Package, X, "one_of"),
-  activate_requirement(node(ID, Package), X),
-  requirement_group(Package, X).
+requirement_group_satisfied(node(ID, Package), GroupID) :-
+  1 { requirement_is_met(GroupID, ConditionID, node(ID, Package)) } 1,
+  requirement_policy(Package, GroupID, "one_of"),
+  activate_requirement(node(ID, Package), GroupID),
+  requirement_group(Package, GroupID).
 
 requirement_weight(node(ID, Package), Group, W) :-
   condition_holds(Y, node(ID, Package)),
@@ -1028,11 +1071,29 @@ requirement_weight(node(ID, Package), Group, W) :-
   activate_requirement(node(ID, Package), Group),
   requirement_group(Package, Group).
 
-requirement_group_satisfied(node(ID, Package), X) :-
-  1 { condition_holds(Y, node(ID, Package)) : requirement_group_member(Y, Package, X) } ,
-  requirement_policy(Package, X, "any_of"),
-  activate_requirement(node(ID, Package), X),
-  requirement_group(Package, X).
+requirement_group_satisfied(node(ID, Package), GroupID) :-
+  1 { requirement_is_met(GroupID, ConditionID, node(ID, Package)) } ,
+  requirement_policy(Package, GroupID, "any_of"),
+  activate_requirement(node(ID, Package), GroupID),
+  requirement_group(Package, GroupID).
+
+% Derive a fact to represent that the entire requirement, including possible subconditions, is met
+requirement_is_met(GroupID, ConditionID, node(X, Package)) :-
+  requirement_group_member(ConditionID, Package, GroupID),
+  condition_holds(ConditionID, node(X, Package)),
+  not subcondition(_, ConditionID).
+
+requirement_is_met(GroupID, ConditionID, node(X, Package)) :-
+  requirement_group_member(ConditionID, Package, GroupID),
+  condition_holds(ConditionID, node(X, Package)),
+  impose(EffectID, node(X, Package)) : subcondition(SubconditionID, ConditionID), pkg_fact(Package, condition_effect(SubconditionID, EffectID)), condition_holds(SubconditionID, node(X, Package));
+  subcondition(_, ConditionID).
+
+{ do_not_impose(EffectID, node(X, Package)) } :-
+  requirement_group_member(ConditionID, Package, GroupID),
+  condition_holds(ConditionID, node(X, Package)),
+  subcondition(SubconditionID, ConditionID),
+  pkg_fact(Package, condition_effect(SubconditionID, EffectID)).
 
 % Do not impose requirements, if the conditional requirement is not active
 do_not_impose(EffectID, node(ID, Package)) :-
@@ -1052,10 +1113,9 @@ required_provider(Provider, Virtual)
      pkg_fact(Virtual, condition_effect(ConditionID, EffectID)),
      imposed_constraint(EffectID, "node", Provider).
 
-error(1, "Trying to use {0} as a provider for {1}, but {2} is required", Package, Virtual, Provider) :-
-   provider(node(Y, Package), node(X, Virtual)),
+error(1, "Cannot use {1} for the {0} virtual, but that is required", Virtual, Provider) :-
    required_provider(Provider, Virtual),
-   Package != Provider.
+   not provider(node(_, Provider), node(_, Virtual)).
 
 % TODO: the following choice rule allows the solver to add compiler
 % flags if their only source is from a requirement. This is overly-specific
@@ -1329,6 +1389,14 @@ variant_single_value(PackageNode, Variant)
   :- node_has_variant(PackageNode, Variant, VariantID),
      auto_variant(Variant, VariantID),
      not variant_type(VariantID, "multi").
+
+% to respect requirements/preferences we need to define that an auto_variant is set
+{ attr("variant_set", node(ID, Package), Variant, VariantValue)}
+  :- auto_variant(Variant, _ ),
+     condition_requirement(TriggerID, "variant_value", Package, Variant, VariantValue),
+     pkg_fact(Package, condition_trigger(ConditionID, TriggerID)),
+     requirement_group_member(ConditionID , Package, RequirementID),
+     activate_requirement(node(ID, Package), RequirementID).
 
 % suppress warnings about this atom being unset.  It's only set if some
 % spec or some package sets it, and without this, clingo will give

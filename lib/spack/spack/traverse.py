@@ -17,7 +17,7 @@ from typing import (
     overload,
 )
 
-from _vendoring.typing_extensions import Literal
+from spack.vendor.typing_extensions import Literal
 
 import spack.deptypes as dt
 import spack.spec
@@ -35,8 +35,9 @@ class EdgeAndDepth(NamedTuple):
     depth: int
 
 
+# Sort edges by name first, then abstract hash, then full edge comparison to break ties
 def sort_edges(edges):
-    edges.sort(key=lambda edge: (edge.spec.name or "", edge.spec.abstract_hash or ""))
+    edges.sort(key=lambda edge: (edge.spec.name or "", edge.spec.abstract_hash or "", edge))
     return edges
 
 

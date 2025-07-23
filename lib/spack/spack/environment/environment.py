@@ -14,12 +14,6 @@ import stat
 import warnings
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
-import llnl.util.filesystem as fs
-import llnl.util.tty as tty
-import llnl.util.tty.color as clr
-from llnl.util.link_tree import ConflictingSpecsError
-from llnl.util.symlink import islink, readlink, symlink
-
 import spack
 import spack.concretize
 import spack.config
@@ -27,6 +21,9 @@ import spack.deptypes as dt
 import spack.error
 import spack.filesystem_view as fsv
 import spack.hash_types as ht
+import spack.llnl.util.filesystem as fs
+import spack.llnl.util.tty as tty
+import spack.llnl.util.tty.color as clr
 import spack.paths
 import spack.repo
 import spack.schema.env
@@ -41,6 +38,8 @@ import spack.util.spack_json as sjson
 import spack.util.spack_yaml as syaml
 from spack import traverse
 from spack.installer import PackageInstaller
+from spack.llnl.util.filesystem import islink, readlink, symlink
+from spack.llnl.util.link_tree import ConflictingSpecsError
 from spack.schema.env import TOP_LEVEL_KEY
 from spack.spec import Spec
 from spack.util.path import substitute_path_variables
@@ -125,7 +124,7 @@ spack:
     )
 
 
-#: regex for validating enviroment names
+#: regex for validating environment names
 valid_environment_name_re = r"^\w[\w-]*$"
 
 #: version of the lockfile format. Must increase monotonically.
@@ -1422,7 +1421,9 @@ class Environment:
         """Returns true when the spec is built from local sources"""
         return spec.name in self.dev_specs
 
-    def concretize(self, force=False, tests=False):
+    def concretize(
+        self, force: Optional[bool] = None, tests: Union[bool, Sequence] = False
+    ) -> Sequence[SpecPair]:
         """Concretize user_specs in this environment.
 
         Only concretizes specs that haven't been concretized yet unless
@@ -1432,15 +1433,18 @@ class Environment:
         write out a lockfile containing concretized specs.
 
         Arguments:
-            force (bool): re-concretize ALL specs, even those that were
-               already concretized
-            tests (bool or list or set): False to run no tests, True to test
-                all packages, or a list of package names to run tests for some
+            force: re-concretize ALL specs, even those that were already concretized;
+                defaults to ``spack.config.get("concretizer:force")``
+            tests: False to run no tests, True to test all packages, or a list of
+                package names to run tests for some
 
         Returns:
             List of specs that have been concretized. Each entry is a tuple of
             the user spec and the corresponding concretized spec.
         """
+        if force is None:
+            force = spack.config.get("concretizer:force")
+
         if force:
             # Clear previously concretized specs
             self.concretized_user_specs = []
@@ -1474,7 +1478,7 @@ class Environment:
 
         Arguments:
             spec: Spec to deconcretize. This must be a root of the environment
-            concrete: If True, find all instances of spec as concrete in the environemnt.
+            concrete: If True, find all instances of spec as concrete in the environment.
                 If False, find a single instance of the abstract spec as root of the environment.
         """
         # spec has to be a root of the environment
@@ -1524,7 +1528,9 @@ class Environment:
         ]
         return new_user_specs, kept_user_specs, specs_to_concretize
 
-    def _concretize_together_where_possible(self, tests: bool = False) -> Sequence[SpecPair]:
+    def _concretize_together_where_possible(
+        self, tests: Union[bool, Sequence] = False
+    ) -> Sequence[SpecPair]:
         # Exit early if the set of concretized specs is the set of user specs
         new_user_specs, _, specs_to_concretize = self._get_specs_to_concretize()
         if not new_user_specs:
@@ -1549,7 +1555,7 @@ class Environment:
 
         return ret
 
-    def _concretize_together(self, tests: bool = False) -> Sequence[SpecPair]:
+    def _concretize_together(self, tests: Union[bool, Sequence] = False) -> Sequence[SpecPair]:
         """Concretization strategy that concretizes all the specs
         in the same DAG.
         """
@@ -1590,7 +1596,7 @@ class Environment:
         # Return the portion of the return value that is new
         return concretized_specs[: len(new_user_specs)]
 
-    def _concretize_separately(self, tests=False):
+    def _concretize_separately(self, tests: Union[bool, Sequence] = False):
         """Concretization strategy that concretizes separately one
         user spec after the other.
         """
@@ -2261,9 +2267,14 @@ class Environment:
         # and add them to the spec, including build specs
         for lockfile_key, node_dict in json_specs_by_hash.items():
             name, data = reader.name_and_data(node_dict)
-            for _, dep_hash, deptypes, _, virtuals in reader.dependencies_from_node_dict(data):
+            for _, dep_hash, deptypes, _, virtuals, direct in reader.dependencies_from_node_dict(
+                data
+            ):
                 specs_by_hash[lockfile_key]._add_dependency(
-                    specs_by_hash[dep_hash], depflag=dt.canonicalize(deptypes), virtuals=virtuals
+                    specs_by_hash[dep_hash],
+                    depflag=dt.canonicalize(deptypes),
+                    virtuals=virtuals,
+                    direct=direct,
                 )
 
             if "build_spec" in node_dict:
@@ -2947,11 +2958,11 @@ class EnvironmentManifestFile(collections.abc.Mapping):
             ensure_no_disallowed_env_config_mods(self._env_config_scope)
         return self._env_config_scope
 
-    def prepare_config_scope(self) -> None:
+    def prepare_config_scope(
+        self, priority: ConfigScopePriority = ConfigScopePriority.ENVIRONMENT
+    ) -> None:
         """Add the manifest's scope to the global configuration search path."""
-        spack.config.CONFIG.push_scope(
-            self.env_config_scope, priority=ConfigScopePriority.ENVIRONMENT
-        )
+        spack.config.CONFIG.push_scope(self.env_config_scope, priority)
 
     def deactivate_config_scope(self) -> None:
         """Remove the manifest's scope from the global config path."""

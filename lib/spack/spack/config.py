@@ -36,9 +36,7 @@ import sys
 from collections import defaultdict
 from typing import Any, Callable, Dict, Generator, List, NamedTuple, Optional, Tuple, Union
 
-from _vendoring import jsonschema
-
-from llnl.util import filesystem, lang, tty
+from spack.vendor import jsonschema
 
 import spack.error
 import spack.paths
@@ -59,10 +57,12 @@ import spack.schema.mirrors
 import spack.schema.modules
 import spack.schema.packages
 import spack.schema.repos
+import spack.schema.toolchains
 import spack.schema.upstreams
 import spack.schema.view
 import spack.util.remote_file_cache as rfc_util
 import spack.util.spack_yaml as syaml
+from spack.llnl.util import filesystem, lang, tty
 from spack.util.cpus import cpus_available
 from spack.util.spack_yaml import get_mark_from_yaml_data
 
@@ -86,6 +86,7 @@ SECTION_SCHEMAS: Dict[str, Any] = {
     "bootstrap": spack.schema.bootstrap.schema,
     "ci": spack.schema.ci.schema,
     "cdash": spack.schema.cdash.schema,
+    "toolchains": spack.schema.toolchains.schema,
 }
 
 # Same as above, but including keys for environments
@@ -1601,7 +1602,7 @@ def determine_number_of_jobs(
     except ValueError:
         pass
 
-    return min(max_cpus, cfg.get("config:build_jobs", 4))
+    return min(max_cpus, cfg.get("config:build_jobs", 16))
 
 
 class ConfigSectionError(spack.error.ConfigError):

@@ -5,21 +5,21 @@
 import argparse
 import os
 import shlex
-import sys
 import tempfile
-from typing import Any, Dict, List, Optional, Union
-
-import llnl.util.tty as tty
-from llnl.util.tty import color
+from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 
 import spack
 import spack.caches
 import spack.config
+import spack.llnl.util.tty as tty
 import spack.repo
 import spack.util.executable
+import spack.util.git
 import spack.util.path
+import spack.util.spack_yaml
 from spack.cmd.common import arguments
 from spack.error import SpackError
+from spack.llnl.util.tty import color
 
 description = "manage package source repositories"
 section = "config"
@@ -46,9 +46,14 @@ def setup_parser(subparser: argparse.ArgumentParser):
     )
 
     # List
-    list_parser = sp.add_parser("list", help=repo_list.__doc__)
+    list_parser = sp.add_parser("list", aliases=["ls"], help=repo_list.__doc__)
     list_parser.add_argument(
         "--scope", action=arguments.ConfigScope, help="configuration scope to read from"
+    )
+    output_group = list_parser.add_mutually_exclusive_group()
+    output_group.add_argument("--names", action="store_true", help="show configuration names only")
+    output_group.add_argument(
+        "--namespaces", action="store_true", help="show repository namespaces only"
     )
 
     # Add
@@ -131,6 +136,31 @@ def setup_parser(subparser: argparse.ArgumentParser):
         help="automatically migrate the repository to the latest Package API",
     )
 
+    # Update
+    update_parser = sp.add_parser("update", help=repo_update.__doc__)
+    update_parser.add_argument("names", nargs="*", default=[], help="repositories to update")
+    update_parser.add_argument(
+        "--remote",
+        "-r",
+        default="origin",
+        nargs="?",
+        help="name of remote to check for branches, tags, or commits",
+    )
+    update_parser.add_argument(
+        "--scope",
+        action=arguments.ConfigScope,
+        default=lambda: spack.config.default_modify_scope(),
+        help="configuration scope to modify",
+    )
+    update_parser.add_argument(
+        "--branch", "-b", nargs="?", default=None, help="name of a branch to change to"
+    )
+    refspec = update_parser.add_mutually_exclusive_group(required=False)
+    refspec.add_argument("--tag", "-t", nargs="?", default=None, help="name of a tag to change to")
+    refspec.add_argument(
+        "--commit", "-c", nargs="?", default=None, help="name of a commit to change to"
+    )
+
 
 def repo_create(args):
     """create a new package repository"""
@@ -203,8 +233,8 @@ def _add_repo(
     if key in existing:
         raise SpackError(f"A repository with the name '{key}' already exists.")
 
-    existing[key] = entry
-    config.set("repos", existing, scope)
+    # Prepend the new repository
+    config.set("repos", spack.util.spack_yaml.syaml_dict({key: entry, **existing}), scope)
     return key
 
 
@@ -260,30 +290,31 @@ def repo_list(args):
         lock=spack.repo.package_repository_lock(), config=spack.config.CONFIG, scope=args.scope
     )
 
-    if not sys.stdout.isatty():
+    # --names: just print config names
+    if args.names:
         for name in descriptors:
             print(name)
         return
 
-    # Collect all repository information for aligned output
+    # --namespaces: print all repo namespaces
+    if args.namespaces:
+        for name, path, maybe_repo in _iter_repos_from_descriptors(descriptors):
+            if isinstance(maybe_repo, spack.repo.Repo):
+                print(maybe_repo.namespace)
+        return
+
+    # Default table format: collect all repository information for aligned output
     repo_info = []
 
-    for name, descriptor in descriptors.items():
-        descriptor.initialize(fetch=False)
-        repos_for_descriptor = descriptor.construct(cache=spack.caches.MISC_CACHE)
-
-        # Register all repos and errors for this descriptor
-        for path, maybe_repo in repos_for_descriptor.items():
-            if isinstance(maybe_repo, spack.repo.Repo):
-                repo_info.append(
-                    ("@g{[+]}", maybe_repo.namespace, maybe_repo.package_api_str, maybe_repo.root)
-                )
-            else:  # exception
-                repo_info.append(("@r{[-]}", name, "", f"{path}: {maybe_repo}"))
-
-        # If there are no repos, it means it's not yet cloned; then we status + git repository
-        if not repos_for_descriptor and isinstance(descriptor, spack.repo.RemoteRepoDescriptor):
-            repo_info.append(("@K{ - }", name, "", descriptor.repository))
+    for name, path, maybe_repo in _iter_repos_from_descriptors(descriptors):
+        if isinstance(maybe_repo, spack.repo.Repo):
+            repo_info.append(
+                ("@g{[+]}", maybe_repo.namespace, maybe_repo.package_api_str, maybe_repo.root)
+            )
+        elif maybe_repo is None:  # Uninitialized Git-based repo case
+            repo_info.append(("@K{ - }", name, "", path))
+        else:  # Exception/error case
+            repo_info.append(("@r{[-]}", name, "", f"{path}: {maybe_repo}"))
 
     if repo_info:
         max_namespace_width = max(len(namespace) for _, namespace, _, _ in repo_info) + 3
@@ -419,13 +450,115 @@ def repo_set(args):
     tty.msg(f"Updated repo '{namespace}'")
 
 
+def _iter_repos_from_descriptors(
+    descriptors: spack.repo.RepoDescriptors,
+) -> Generator[Tuple[str, str, Union[spack.repo.Repo, Exception, None]], None, None]:
+    """Iterate through repository descriptors and yield (name, path, maybe_repo) tuples.
+
+    Yields:
+        Tuple of (config_name, path, maybe_repo) where maybe_repo is a Repo instance if it could
+        be instantiated, an Exception if it could not be instantiated, or None if it was not
+        initialized yet.
+    """
+    for name, descriptor in descriptors.items():
+        descriptor.initialize(fetch=False)
+        repos_for_descriptor = descriptor.construct(cache=spack.caches.MISC_CACHE)
+
+        for path, maybe_repo in repos_for_descriptor.items():
+            yield name, path, maybe_repo
+
+        # If there are no repos, it means it's not yet cloned; yield descriptor info
+        if not repos_for_descriptor and isinstance(descriptor, spack.repo.RemoteRepoDescriptor):
+            yield name, descriptor.repository, None  # None indicates remote descriptor
+
+
+def repo_update(args: Any) -> int:
+    """update one or more package repositories"""
+    descriptors = spack.repo.RepoDescriptors.from_config(
+        spack.repo.package_repository_lock(), spack.config.CONFIG
+    )
+
+    git_flags = ["commit", "tag", "branch"]
+    active_flag = next((attr for attr in git_flags if getattr(args, attr)), None)
+    if active_flag and len(args.names) != 1:
+        raise SpackError(
+            f"Unable to set --{active_flag} because more than one namespace was given."
+            if len(args.names) > 1
+            else f"Unable to apply --{active_flag} without a namespace"
+        )
+
+    for name in args.names:
+        if name not in descriptors:
+            raise SpackError(f"{name} is not a known repository name.")
+
+        # filter descriptors when namespaces are provided as arguments
+        descriptors = spack.repo.RepoDescriptors(
+            {name: descriptor for name, descriptor in descriptors.items() if name in args.names}
+        )
+
+    # Get the repos for the specific scope we're modifying
+    scope_repos: Dict[str, Any] = spack.config.get("repos", default={}, scope=args.scope)
+
+    for name, descriptor in descriptors.items():
+        if not isinstance(descriptor, spack.repo.RemoteRepoDescriptor):
+            continue
+
+        if active_flag:
+            # update the git commit, tag, or branch of the descriptor
+            setattr(descriptor, active_flag, getattr(args, active_flag))
+
+            updated_entry = scope_repos[name] if name in scope_repos else {}
+
+            # prune previous values of git fields
+            for entry in {"commit", "tag"} - {active_flag}:
+                setattr(descriptor, entry, None)
+                updated_entry.pop(entry, None)
+
+            updated_entry[active_flag] = args.commit or args.tag or args.branch
+            scope_repos[name] = updated_entry
+
+        git = spack.util.git.git(required=True)
+
+        previous_commit = descriptor.get_commit(git=git)
+        descriptor.update(git=git, remote=args.remote)
+        new_commit = descriptor.get_commit(git=git)
+
+        if previous_commit == new_commit:
+            tty.msg(f"{name}: Already up to date.")
+        else:
+            fails = [
+                r
+                for r in descriptor.construct(cache=spack.caches.MISC_CACHE).values()
+                if type(r) is spack.repo.BadRepoVersionError
+            ]
+            if fails:
+                min_ver = ".".join(str(n) for n in spack.min_package_api_version)
+                max_ver = ".".join(str(n) for n in spack.package_api_version)
+                tty.error(
+                    f"{name}: repo is too new for this version of Spack. ",
+                    f"  Spack supports API v{min_ver} to v{max_ver}, but repo is {fails[0].api}",
+                    "  Please upgrade Spack or revert with:\n",
+                    f"       spack repo update --commit {previous_commit}\n",
+                )
+
+            else:
+                tty.msg(f"{name}: Updated sucessfully.")
+
+    if active_flag:
+        spack.config.set("repos", scope_repos, args.scope)
+
+    return 0
+
+
 def repo(parser, args):
     return {
         "create": repo_create,
         "list": repo_list,
+        "ls": repo_list,
         "add": repo_add,
         "set": repo_set,
         "remove": repo_remove,
         "rm": repo_remove,
         "migrate": repo_migrate,
+        "update": repo_update,
     }[args.repo_command](args)
