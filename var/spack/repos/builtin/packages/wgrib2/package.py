@@ -177,6 +177,7 @@ class Wgrib2(MakefilePackage, CMakePackage):
     depends_on("ip@5.1:", when="@3.5: +ipolates")
     depends_on("lapack", when="@3.5: +ipolates")
     depends_on("libaec@1.0.6:", when="@3.2: +aec")
+    depends_on("netcdf-c", when="@3.6: +netcdf")
     depends_on("netcdf-c", when="@3.2: +netcdf4")
     depends_on("jasper@:2", when="@3.2:3.4 +jasper")
     depends_on("g2c", when="@3.5: +jasper")
