@@ -334,7 +334,11 @@ class LmodFileLayout(BaseFileLayout):
         # we need to append a hash to the version to distinguish
         # among flavors of the same library (e.g. openblas~openmp vs.
         # openblas+openmp)
-        return f"{path_part_fmt(token=value)}-{value.dag_hash(length=7)}"
+        # DH* 20250827 spack-stack doesn't want the hash so that
+        # lmod and tcl function in the same way
+        #return f"{path_part_fmt(token=value)}-{value.dag_hash(length=7)}"
+        return path_part_fmt(token=value)
+        # *DH 20250827
 
     @property
     def available_path_parts(self):
