@@ -336,7 +336,7 @@ class LmodFileLayout(BaseFileLayout):
         # openblas+openmp)
         # DH* 20250827 spack-stack doesn't want the hash so that
         # lmod and tcl function in the same way
-        #return f"{path_part_fmt(token=value)}-{value.dag_hash(length=7)}"
+        # return f"{path_part_fmt(token=value)}-{value.dag_hash(length=7)}"
         return path_part_fmt(token=value)
         # *DH 20250827
 
