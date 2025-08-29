@@ -52,6 +52,8 @@ jobs:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         fetch-depth: 0
+    - name: Revert spack-stack modifications
+      run: ./REMOVE_SPACK_STACK_MODS_FOR_CI.sh
     - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
       with:
         python-version: ${{ matrix.python-version }}
@@ -62,10 +64,6 @@ jobs:
           sudo apt-get -y install \
               coreutils cvs gfortran graphviz gnupg2 mercurial ninja-build \
               cmake bison libbison-dev subversion
-    - name: remove-extension
-      run: |
-          source share/spack/setup-env.sh
-          spack config --scope=defaults rm "config:extensions"
     # On ubuntu 24.04, kcov was removed. It may come back in some future Ubuntu
     - name: Set up Homebrew
       id: set-up-homebrew
@@ -111,6 +109,8 @@ jobs:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         fetch-depth: 0
+    - name: Revert spack-stack modifications
+      run: ./REMOVE_SPACK_STACK_MODS_FOR_CI.sh
     - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
       with:
         python-version: '3.11'
@@ -133,10 +133,6 @@ jobs:
           # Need this for the git tests to succeed.
           git --version
           . .github/workflows/bin/setup_git.sh
-    - name: remove-extension
-      run: |
-          source share/spack/setup-env.sh
-          spack config --scope=defaults rm "config:extensions"
     - name: Run shell tests
       env:
           COVERAGE: true
@@ -160,6 +156,8 @@ jobs:
               bzip2 curl gcc-c++ gcc gcc-gfortran git gnupg2 gzip \
               make patch tcl unzip which xz
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+    - name: Revert spack-stack modifications
+      run: ./REMOVE_SPACK_STACK_MODS_FOR_CI.sh
     - name: Setup repo and non-root user
       run: |
           git --version
@@ -168,11 +166,6 @@ jobs:
           . .github/workflows/bin/setup_git.sh
           useradd spack-test
           chown -R spack-test .
-    - name: remove-extension
-      shell: runuser -u spack-test -- bash {0}
-      run: |
-          source share/spack/setup-env.sh
-          spack config --scope=defaults rm "config:extensions"
     - name: Run unit tests
       shell: runuser -u spack-test -- bash {0}
       run: |
@@ -186,6 +179,8 @@ jobs:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         fetch-depth: 0
+    - name: Revert spack-stack modifications
+      run: ./REMOVE_SPACK_STACK_MODS_FOR_CI.sh
     - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
       with:
         python-version: '3.13'
@@ -197,10 +192,6 @@ jobs:
       run: |
           pip install --upgrade pip setuptools pytest coverage[toml] pytest-cov clingo
           pip install --upgrade flake8 "isort>=4.3.5" "mypy>=0.900" "click" "black"
-    - name: remove-extension
-      run: |
-          source share/spack/setup-env.sh
-          spack config --scope=defaults rm "config:extensions"
     - name: Run unit tests (full suite with coverage)
       env:
           COVERAGE: true
@@ -229,6 +220,8 @@ jobs:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         fetch-depth: 0
+    - name: Revert spack-stack modifications
+      run: ./REMOVE_SPACK_STACK_MODS_FOR_CI.sh
     - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
       with:
         python-version: ${{ matrix.python-version }}
@@ -239,10 +232,6 @@ jobs:
     - name: Setup Homebrew packages
       run: |
         brew install dash fish gcc gnupg kcov
-    - name: remove-extension
-      run: |
-          source share/spack/setup-env.sh
-          spack config --scope=defaults rm "config:extensions"
     - name: Run unit tests
       env:
         SPACK_TEST_PARALLEL: 4
@@ -273,6 +262,8 @@ jobs:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         fetch-depth: 0
+    - name: Revert spack-stack modifications
+      run: ./REMOVE_SPACK_STACK_MODS_FOR_CI.sh
     - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
       with:
         python-version: 3.9
@@ -282,10 +273,6 @@ jobs:
     - name: Create local develop
       run: |
         ./.github/workflows/bin/setup_git.ps1
-    - name: remove-extension
-      run: |
-          source share/spack/setup-env.sh
-          spack config --scope=defaults rm "config:extensions"
     - name: Unit Test
       env:
         COVERAGE_FILE: coverage/.coverage-windows

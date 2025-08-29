@@ -33,6 +33,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+    - name: Revert spack-stack modifications
+      run: ./REMOVE_SPACK_STACK_MODS_FOR_CI.sh
     - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
       with:
         python-version: '3.13'
@@ -57,6 +59,8 @@ jobs:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         fetch-depth: 2
+    - name: Revert spack-stack modifications
+      run: ./REMOVE_SPACK_STACK_MODS_FOR_CI.sh
     - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
       with:
         python-version: '3.13'
@@ -81,6 +85,8 @@ jobs:
               bzip2 curl file gcc-c++ gcc gcc-gfortran git gnupg2 gzip \
               make patch tcl unzip which xz
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Revert spack-stack modifications
+        run: ./REMOVE_SPACK_STACK_MODS_FOR_CI.sh
       - name: Setup repo and non-root user
         run: |
           git --version
