@@ -7,12 +7,16 @@ on:
       - releases/**
       - spack-stack-dev
       - release/**
+      # DH* TEMPORARY
+      - feature/update_to_spack_v1
   pull_request:
     branches:
       - develop
       - releases/**
       - spack-stack-dev
       - release/**
+      # DH* TEMPORARY
+      - feature/update_to_spack_v1
   workflow_call:
     inputs:
       with_coverage:
