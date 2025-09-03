@@ -5,18 +5,16 @@ on:
     branches:
       - develop
       - releases/**
-      - spack-stack-dev
+      # DH* TURN OFF UNTIL NEXT MAJOR UPDATE FROM SPACK - SEE https://github.com/JCSDA/spack/pull/563
+      #- spack-stack-dev
       - release/**
-      # DH* TEMPORARY
-      - feature/update_to_spack_v1
   pull_request:
     branches:
       - develop
       - releases/**
-      - spack-stack-dev
+      # DH* TURN OFF UNTIL NEXT MAJOR UPDATE FROM SPACK - SEE https://github.com/JCSDA/spack/pull/563
+      #- spack-stack-dev
       - release/**
-      # DH* TEMPORARY
-      - feature/update_to_spack_v1
   workflow_dispatch:
   workflow_call:
 
