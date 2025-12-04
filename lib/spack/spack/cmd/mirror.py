@@ -2,17 +2,17 @@
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
+import argparse
 import sys
-
-import llnl.util.lang as lang
-import llnl.util.tty as tty
-import llnl.util.tty.colify as colify
 
 import spack.caches
 import spack.cmd
 import spack.concretize
 import spack.config
 import spack.environment as ev
+import spack.llnl.util.lang as lang
+import spack.llnl.util.tty as tty
+import spack.llnl.util.tty.colify as colify
 import spack.mirrors.mirror
 import spack.mirrors.utils
 import spack.repo
@@ -26,7 +26,7 @@ section = "config"
 level = "long"
 
 
-def setup_parser(subparser):
+def setup_parser(subparser: argparse.ArgumentParser) -> None:
     arguments.add_common_arguments(subparser, ["no_checksum"])
 
     sp = subparser.add_subparsers(metavar="SUBCOMMAND", dest="mirror_command")
@@ -45,7 +45,7 @@ def setup_parser(subparser):
         " in the current environment if there is an active environment"
         " (this requires significant time and space)",
     )
-    create_parser.add_argument("-f", "--file", help="file with specs of packages to put in mirror")
+    create_parser.add_argument("--file", help="file with specs of packages to put in mirror")
     create_parser.add_argument(
         "--exclude-file",
         help="specs which Spack should not try to add to a mirror"
@@ -225,7 +225,7 @@ def setup_parser(subparser):
     arguments.add_connection_args(set_parser, False)
 
     # List
-    list_parser = sp.add_parser("list", help=mirror_list.__doc__)
+    list_parser = sp.add_parser("list", aliases=["ls"], help=mirror_list.__doc__)
     list_parser.add_argument(
         "--scope", action=arguments.ConfigScope, help="configuration scope to read from"
     )
@@ -696,6 +696,7 @@ def mirror(parser, args):
         "set-url": mirror_set_url,
         "set": mirror_set,
         "list": mirror_list,
+        "ls": mirror_list,
     }
 
     if args.no_checksum:
