@@ -84,7 +84,7 @@ def test_conditionally_extends_direct_dep(config, mock_packages):
 def test_error_on_anonymous_dependency(config, mock_packages):
     pkg = spack.repo.PATH.get_pkg_class("pkg-a")
     with pytest.raises(spack.directives.DependencyError):
-        spack.directives._depends_on(pkg, spack.spec.Spec("@4.5"))
+        spack.directives._execute_depends_on(pkg, spack.spec.Spec("@4.5"))
 
 
 @pytest.mark.regression("34879")
@@ -151,11 +151,11 @@ def test_version_type_validation():
 
     # Pass a float
     with pytest.raises(spack.version.VersionError, match=msg):
-        spack.directives._execute_version(package(name="python"), 3.10)
+        spack.directives._execute_version(package(name="python"), ver=3.10, kwargs={})
 
     # Try passing a bogus type; it's just that we want a nice error message
     with pytest.raises(spack.version.VersionError, match=msg):
-        spack.directives._execute_version(package(name="python"), {})
+        spack.directives._execute_version(package(name="python"), ver={}, kwargs={})
 
 
 @pytest.mark.parametrize(
@@ -196,3 +196,19 @@ def test_redistribute_override_when():
     spack.directives._execute_redistribute(cls, source=None, binary=False, when="@1.0")
     assert cls.disable_redistribute[spec_key].binary
     assert cls.disable_redistribute[spec_key].source
+
+
+@pytest.mark.regression("51248")
+def test_direct_dependencies_from_when_context_are_retained(mock_packages):
+    """Tests that direct dependencies from the "when" context manager don't lose the "direct"
+    attribute when turned into directives on the package class.
+    """
+    pkg_cls = spack.repo.PATH.get_pkg_class("with-constraint-met")
+    # Direct dependency in a "when" single context manager
+    assert spack.spec.Spec("%pkg-b") in pkg_cls.dependencies
+    # Direct dependency in a "when" nested context manager
+    assert spack.spec.Spec("@2 %c=gcc %pkg-c %pkg-b@:4.0") in pkg_cls.dependencies
+    # Nested ^foo followed by %foo
+    assert spack.spec.Spec("%pkg-c") in pkg_cls.dependencies
+    # Nested ^foo followed by ^foo %gcc
+    assert spack.spec.Spec("^pkg-c %gcc") in pkg_cls.dependencies

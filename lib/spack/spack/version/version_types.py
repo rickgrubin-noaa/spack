@@ -10,13 +10,13 @@ from spack.util.typing import SupportsRichComparison
 
 from .common import (
     ALPHA,
-    COMMIT_VERSION,
     FINAL,
     PRERELEASE_TO_STRING,
     STRING_TO_PRERELEASE,
     EmptyRangeError,
     VersionLookupError,
     infinity_versions,
+    is_git_commit_sha,
     is_git_version,
     iv_min_len,
 )
@@ -172,6 +172,8 @@ class VersionType(SupportsRichComparison):
 
     """
 
+    __slots__ = ()
+
     def intersection(self, other: "VersionType") -> "VersionType":
         """Any versions contained in both self and other, or empty VersionList if no overlap."""
         raise NotImplementedError
@@ -199,6 +201,8 @@ class VersionType(SupportsRichComparison):
 class ConcreteVersion(VersionType):
     """Base type for versions that represents a single (non-range or list) version."""
 
+    __slots__ = ()
+
 
 def _stringify_version(versions: VersionTuple, separators: Tuple[str, ...]) -> str:
     """Create a string representation from version components."""
@@ -217,7 +221,7 @@ def _stringify_version(versions: VersionTuple, separators: Tuple[str, ...]) -> s
 class StandardVersion(ConcreteVersion):
     """Class to represent versions"""
 
-    __slots__ = ["version", "_string", "separators"]
+    __slots__ = ("version", "_string", "separators")
 
     _string: str
     version: VersionTuple
@@ -386,7 +390,7 @@ class StandardVersion(ConcreteVersion):
         return other.intersection(self)
 
     def isdevelop(self) -> bool:
-        """Triggers on the special case of the `@develop-like` version."""
+        """Triggers on the special case of the ``@develop-like`` version."""
         return any(
             isinstance(p, VersionStrComponent) and isinstance(p.data, int) for p in self.version[0]
         )
@@ -410,6 +414,7 @@ class StandardVersion(ConcreteVersion):
         """The dotted representation of the version.
 
         Example:
+
         >>> version = Version('1-2-3b')
         >>> version.dotted
         Version('1.2.3b')
@@ -424,13 +429,13 @@ class StandardVersion(ConcreteVersion):
         """The underscored representation of the version.
 
         Example:
-        >>> version = Version('1.2.3b')
+
+        >>> version = Version("1.2.3b")
         >>> version.underscored
-        Version('1_2_3b')
+        Version("1_2_3b")
 
         Returns:
-            Version: The version with separator characters replaced by
-                underscores
+            Version: The version with separator characters replaced by underscores
         """
         return type(self).from_string(self.string.replace(".", "_").replace("-", "_"))
 
@@ -439,9 +444,10 @@ class StandardVersion(ConcreteVersion):
         """The dashed representation of the version.
 
         Example:
-        >>> version = Version('1.2.3b')
+
+        >>> version = Version("1.2.3b")
         >>> version.dashed
-        Version('1-2-3b')
+        Version("1-2-3b")
 
         Returns:
             Version: The version with separator characters replaced by dashes
@@ -453,9 +459,10 @@ class StandardVersion(ConcreteVersion):
         """The joined representation of the version.
 
         Example:
-        >>> version = Version('1.2.3b')
+
+        >>> version = Version("1.2.3b")
         >>> version.joined
-        Version('123b')
+        Version("123b")
 
         Returns:
             Version: The version with separator characters removed
@@ -468,21 +475,22 @@ class StandardVersion(ConcreteVersion):
         """The version up to the specified component.
 
         Examples:
-        >>> version = Version('1.23-4b')
+
+        >>> version = Version("1.23-4b")
         >>> version.up_to(1)
-        Version('1')
+        Version("1")
         >>> version.up_to(2)
-        Version('1.23')
+        Version("1.23")
         >>> version.up_to(3)
-        Version('1.23-4')
+        Version("1.23-4")
         >>> version.up_to(4)
-        Version('1.23-4b')
+        Version("1.23-4b")
         >>> version.up_to(-1)
-        Version('1.23-4')
+        Version("1.23-4")
         >>> version.up_to(-2)
-        Version('1.23')
+        Version("1.23")
         >>> version.up_to(-3)
-        Version('1')
+        Version("1")
 
         Returns:
             Version: The first index components of the version
@@ -505,19 +513,12 @@ class StandardVersion(ConcreteVersion):
         return self.up_to(3)
 
 
-_STANDARD_VERSION_TYPEMIN = StandardVersion("", ((), (ALPHA,)), ("",))
-
-_STANDARD_VERSION_TYPEMAX = StandardVersion(
-    "infinity", ((VersionStrComponent(len(infinity_versions)),), (FINAL,)), ("",)
-)
-
-
 class GitVersion(ConcreteVersion):
     """Class to represent versions interpreted from git refs.
 
     There are two distinct categories of git versions:
 
-    1) GitVersions instantiated with an associated reference version (e.g. 'git.foo=1.2')
+    1) GitVersions instantiated with an associated reference version (e.g. ``git.foo=1.2``)
     2) GitVersions requiring commit lookups
 
     Git ref versions that are not paired with a known version are handled separately from
@@ -548,7 +549,7 @@ class GitVersion(ConcreteVersion):
     sufficient.
     """
 
-    __slots__ = ["has_git_prefix", "commit_sha", "ref", "std_version", "_ref_lookup"]
+    __slots__ = ("has_git_prefix", "commit_sha", "ref", "is_commit", "std_version", "_ref_lookup")
 
     def __init__(self, string: str):
         # TODO will be required for concrete specs when commit lookup added
@@ -579,7 +580,7 @@ class GitVersion(ConcreteVersion):
             self.ref = normalized_string
 
         # Used by fetcher
-        self.is_commit: bool = len(self.ref) == 40 and bool(COMMIT_VERSION.match(self.ref))
+        self.is_commit: bool = is_git_commit_sha(self.ref)
 
         # translations
         if self.is_commit:
@@ -773,6 +774,8 @@ class GitVersion(ConcreteVersion):
 
 
 class ClosedOpenRange(VersionType):
+    __slots__ = ("lo", "hi")
+
     def __init__(self, lo: StandardVersion, hi: StandardVersion):
         if hi < lo:
             raise EmptyRangeError(f"{lo}..{hi} is an empty range")
@@ -1066,6 +1069,13 @@ class VersionList(VersionType):
             return VersionList([Version(dictionary["version"])])
         raise ValueError("Dict must have 'version' or 'versions' in it.")
 
+    @classmethod
+    def any(cls) -> "VersionList":
+        """Return a VersionList that matches any version."""
+        version_list = cls.__new__(cls)
+        version_list.versions = [_UNBOUNDED_RANGE]
+        return version_list
+
     def update(self, other: "VersionList") -> None:
         self.add(other)
 
@@ -1161,9 +1171,7 @@ class VersionList(VersionType):
         if not self.versions:
             return ""
 
-        return ",".join(
-            f"={v}" if isinstance(v, StandardVersion) else str(v) for v in self.versions
-        )
+        return ",".join(f"={v}" if type(v) is StandardVersion else str(v) for v in self.versions)
 
     def __repr__(self) -> str:
         return str(self.versions)
@@ -1326,3 +1334,14 @@ def ver(obj: Union[VersionType, str, list, tuple, int, float]) -> VersionType:
         return from_string(str(obj))
     else:
         raise TypeError("ver() can't convert %s to version!" % type(obj))
+
+
+_STANDARD_VERSION_TYPEMIN = StandardVersion("", ((), (ALPHA,)), ("",))
+
+_STANDARD_VERSION_TYPEMAX = StandardVersion(
+    "infinity", ((VersionStrComponent(len(infinity_versions)),), (FINAL,)), ("",)
+)
+
+_UNBOUNDED_RANGE = ClosedOpenRange.from_version_range(
+    _STANDARD_VERSION_TYPEMIN, _STANDARD_VERSION_TYPEMAX
+)

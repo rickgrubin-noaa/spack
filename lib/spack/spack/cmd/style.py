@@ -7,8 +7,8 @@ import os
 import re
 import sys
 import warnings
-from itertools import islice, zip_longest
-from typing import Callable, Dict, List, Optional
+from itertools import zip_longest
+from typing import Callable, Dict, List, Optional, Set
 
 import spack.llnl.util.tty as tty
 import spack.llnl.util.tty.color as color
@@ -38,7 +38,7 @@ def grouper(iterable, n, fillvalue=None):
 exclude_paths = [os.path.relpath(spack.paths.vendor_path, spack.paths.prefix)]
 
 #: Order in which tools should be run. flake8 is last so that it can
-#: double-check the results of other tools (if, e.g., --fix was provided)
+#: double-check the results of other tools (if, e.g., ``--fix`` was provided)
 #: The list maps an executable name to a method to ensure the tool is
 #: bootstrapped or present in the environment.
 tool_names = ["import", "isort", "black", "flake8", "mypy"]
@@ -55,7 +55,7 @@ def is_package(f):
     """Whether flake8 should consider a file as a core file or a package.
 
     We run flake8 with different exceptions for the core and for
-    packages, since we allow `from spack.package import *` and poking globals
+    packages, since we allow ``from spack.package import *`` and poking globals
     into packages.
     """
     return f.startswith("var/spack/") and f.endswith("package.py")
@@ -205,7 +205,7 @@ def setup_parser(subparser: argparse.ArgumentParser) -> None:
         "--spec-strings",
         action="store_true",
         help="upgrade spec strings in Python, JSON and YAML files for compatibility with Spack "
-        "v1.0 and v0.x. Example: spack style --spec-strings $(git ls-files). Note: must be "
+        "v1.0 and v0.x. Example: spack style ``--spec-strings $(git ls-files)``. Note: must be "
         "used only on specs from spack v0.X.",
     )
 
@@ -401,15 +401,11 @@ def _run_import_check(
 
     is_use = re.compile(r"(?<!from )(?<!import )spack\.[a-zA-Z0-9_\.]+")
 
-    # redundant imports followed by a `# comment` are ignored, cause there can be legimitate reason
-    # to import a module: execute module scope init code, or to deal with circular imports.
-    is_abs_import = re.compile(r"^import (spack\.[a-zA-Z0-9_\.]+)$", re.MULTILINE)
-
     exit_code = 0
 
     for file in file_list:
-        to_add = set()
-        to_remove = []
+        to_add: Set[str] = set()
+        to_remove: List[str] = []
 
         pretty_path = file if root_relative else cwd_relative(file, root, working_dir)
 
@@ -422,24 +418,51 @@ def _run_import_check(
             print(f"{pretty_path}: could not parse", file=out)
             continue
 
-        for m in is_abs_import.finditer(contents):
-            # Find at most two occurences: the first is the import itself, the second is its usage.
-            if len(list(islice(re.finditer(rf"{re.escape(m.group(1))}(?!\w)", contents), 2))) == 1:
-                to_remove.append(m.group(0))
-                exit_code = 1
-                print(f"{pretty_path}: redundant import: {m.group(1)}", file=out)
+        imported_modules: Set[str] = set()
+        potential_redundant_imports: List[str] = []
 
-        # Clear all strings to avoid matching comments/strings etc.
         for node in ast.walk(parsed):
+            # Clear strings to make sure usages in strings are not counted
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 node.value = ""
+            elif isinstance(node, ast.Import):
+                # Track `import ...` without aliases
+                for name in node.names:
+                    if name.asname is None:
+                        imported_modules.add(name.name)
 
+                # Track top-level imports for redundancy check
+                if (
+                    node.col_offset == 0
+                    and len(node.names) == 1
+                    and node.names[0].asname is None
+                    and node.names[0].name.startswith("spack.")
+                ):
+                    potential_redundant_imports.append(node.names[0].name)
+
+        # Convert back to code after clearing strings
         filtered_contents = ast.unparse(parsed)  # novermin
+
+        # Check for redundant imports
+        for module_name in potential_redundant_imports:
+            usage_regex = rf"(?<!from )(?<!import ){re.escape(module_name)}(?!\w)"
+            if re.search(usage_regex, filtered_contents):
+                continue
+            statement = f"import {module_name}"
+            # redundant imports followed by a `# comment` are ignored, cause there can be
+            # legitimate reason to import a module: execute module scope init code, or to deal
+            # with circular imports.
+            if re.search(rf"^{re.escape(statement)}$", contents, re.MULTILINE):
+                to_remove.append(statement)
+                exit_code = 1
+                print(f"{pretty_path}: redundant import: {module_name}", file=out)
+
+        # Check for missing imports
         for m in is_use.finditer(filtered_contents):
             module = _module_part(root, m.group(0))
             if not module or module in to_add:
                 continue
-            if re.search(rf"import {re.escape(module)}(?!\w|\.)", contents):
+            if module in imported_modules:
                 continue
             to_add.add(module)
             exit_code = 1
@@ -488,7 +511,7 @@ def run_import_check(import_check_cmd, file_list, args):
 
 
 def validate_toolset(arg_value):
-    """Validate --tool and --skip arguments (sets of optionally comma-separated tools)."""
+    """Validate ``--tool`` and ``--skip`` arguments (sets of optionally comma-separated tools)."""
     tools = set(",".join(arg_value).split(","))  # allow args like 'isort,flake8'
     for tool in tools:
         if tool not in tool_names:
@@ -657,11 +680,13 @@ def _spec_str_fix_handler(path: str, line: int, col: int, old: str, new: str):
 
 def _spec_str_ast(path: str, tree: ast.AST, handler: SpecStrHandler) -> None:
     """Walk the AST of a Python file and apply handler to formatted spec strings."""
-    has_constant = sys.version_info >= (3, 8)
     for node in ast.walk(tree):
-        if has_constant and isinstance(node, ast.Constant) and isinstance(node.value, str):
-            current_str = node.value
-        elif not has_constant and isinstance(node, ast.Str):
+        if sys.version_info >= (3, 8):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                current_str = node.value
+            else:
+                continue
+        elif isinstance(node, ast.Str):
             current_str = node.s
         else:
             continue
