@@ -255,7 +255,7 @@ jobs:
         include-hidden-files: true
   # Run unit tests on Windows
   windows:
-    # Can't run this on other repos than spack/spack
+    # Don't run this on other repos than spack/spack
     if: github.repository == 'spack/spack'
     defaults:
       run:
@@ -290,6 +290,8 @@ jobs:
         include-hidden-files: true
 
   canonicalization:
+    # Don't run this on other repos than spack/spack
+    if: github.repository == 'spack/spack'
     name: package.py canonicalization
     runs-on: ubuntu-latest
     container:
