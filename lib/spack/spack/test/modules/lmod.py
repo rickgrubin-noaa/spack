@@ -91,11 +91,14 @@ class TestLmod:
         # hash has been disallowed in the configuration file
         path_parts = layout.available_path_parts
         service_part = spec_string.replace("@", "/")
-        service_part = "-".join([service_part, layout.spec.dag_hash(length=7)])
+        # JCSDA fork only - no hashes in service_part
+        # service_part = "-".join([service_part, layout.spec.dag_hash(length=7)])
 
         if "mpileaks" in spec_string:
             # It's a user, not a provider, so create the provider string
-            service_part = layout.spec["mpi"].format("{name}/{version}-{hash:7}")
+            # JCSDA fork only - no hashes in service_part
+            # service_part = layout.spec["mpi"].format("{name}/{version}-{hash:7}")
+            service_part = layout.spec["mpi"].format("{name}/{version}")
         else:
             # Only relevant for providers, not users, of virtuals
             assert service_part in path_parts
@@ -113,7 +116,7 @@ class TestLmod:
         self, factory, module_configuration, compiler_factory
     ):
         with spack.config.override(
-            "packages", {"llvm": {"externals": [compiler_factory(spec="llvm@3.3")]}}
+            "packages", {"llvm": {"externals": [compiler_factory(spec="llvm@3.3 +clang")]}}
         ):
             module_configuration("complex_hierarchy")
             module, spec = factory("intel-oneapi-compilers%clang@3.3")
@@ -280,9 +283,11 @@ class TestLmod:
         path = module.layout.filename
         mpi_spec = spec["mpi"]
 
-        mpi_element = "{0}/{1}-{2}/".format(
-            mpi_spec.name, mpi_spec.version, mpi_spec.dag_hash(length=7)
-        )
+        # JCSDA fork only
+        mpi_element = "{0}/{1}/".format(mpi_spec.name, mpi_spec.version)
+        # mpi_element = "{0}/{1}-{2}/".format(
+        #     mpi_spec.name, mpi_spec.version, mpi_spec.dag_hash(length=7)
+        # )
 
         assert mpi_element in path
 

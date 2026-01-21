@@ -17,7 +17,7 @@ from typing import Dict, Generator, List, Optional, Set, Tuple
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request
 
-import spack.binary_distribution as bindist
+import spack.binary_distribution
 import spack.config as cfg
 import spack.deptypes as dt
 import spack.environment as ev
@@ -28,7 +28,6 @@ import spack.mirrors.mirror
 import spack.schema
 import spack.spec
 import spack.util.compression as compression
-import spack.util.spack_yaml as syaml
 import spack.util.web as web_util
 from spack import traverse
 from spack.llnl.util.lang import memoized
@@ -144,34 +143,6 @@ def ensure_expected_target_path(path: str) -> str:
     return path
 
 
-def update_env_scopes(
-    env: ev.Environment,
-    cli_scopes: List[str],
-    output_file: str,
-    transform_windows_paths: bool = False,
-) -> None:
-    """Add any config scopes from cli_scopes which aren't already included in the
-    environment, by reading the yaml, adding the missing includes, and writing the
-    updated yaml back to the same location.
-    """
-    with open(env.manifest_path, "r", encoding="utf-8") as env_fd:
-        env_yaml_root = syaml.load(env_fd)
-
-    # Add config scopes to environment
-    env_includes = env_yaml_root["spack"].get("include", [])
-    include_scopes: List[str] = []
-    for scope in cli_scopes:
-        if scope not in include_scopes and scope not in env_includes:
-            include_scopes.insert(0, scope)
-    env_includes.extend(include_scopes)
-    env_yaml_root["spack"]["include"] = [
-        ensure_expected_target_path(i) if transform_windows_paths else i for i in env_includes
-    ]
-
-    with open(output_file, "w", encoding="utf-8") as fd:
-        syaml.dump_config(env_yaml_root, fd, default_flow_style=False)
-
-
 def write_pipeline_manifest(specs, src_prefix, dest_prefix, output_file):
     """Write out the file describing specs that should be copied"""
     buildcache_copies = {}
@@ -179,7 +150,7 @@ def write_pipeline_manifest(specs, src_prefix, dest_prefix, output_file):
     for release_spec in specs:
         release_spec_dag_hash = release_spec.dag_hash()
         cache_class = get_url_buildcache_class(
-            layout_version=bindist.CURRENT_BUILD_CACHE_LAYOUT_VERSION
+            layout_version=spack.binary_distribution.CURRENT_BUILD_CACHE_LAYOUT_VERSION
         )
         buildcache_copies[release_spec_dag_hash] = {
             "src": cache_class.get_manifest_url(release_spec, src_prefix),
@@ -232,9 +203,9 @@ class CDashHandler:
     def build_name(self, spec: Optional[spack.spec.Spec] = None) -> Optional[str]:
         """Returns the CDash build name.
 
-        A name will be generated if the `spec` is provided,
+        A name will be generated if the ``spec`` is provided,
         otherwise, the value will be retrieved from the environment
-        through the `SPACK_CDASH_BUILD_NAME` variable.
+        through the ``SPACK_CDASH_BUILD_NAME`` variable.
 
         Returns: (str) given spec's CDash build name."""
         if spec:
@@ -402,6 +373,7 @@ class PipelineOptions:
         self.pipeline_type = pipeline_type
         self.require_signing = require_signing
         self.cdash_handler = cdash_handler
+        self.forward_variables: List[str] = []
 
 
 class PipelineNode:
@@ -542,7 +514,6 @@ class SpackCIConfig:
             job_vars["SPACK_JOB_SPEC_COMPILER_VERSION"] = release_spec.format("{compiler.version}")
             job_vars["SPACK_JOB_SPEC_ARCH"] = release_spec.format("{architecture}")
             job_vars["SPACK_JOB_SPEC_VARIANTS"] = release_spec.format("{variants}")
-
         return job_object
 
     def __is_named(self, section):
@@ -582,7 +553,7 @@ class SpackCIConfig:
                 if _spec_matches(spec, match_string):
                     matched = True
                     if "build-job-remove" in match_attrs:
-                        spack.config.remove_yaml(dest, attrs["build-job-remove"])
+                        cfg.remove_yaml(dest, attrs["build-job-remove"])
                     if "build-job" in match_attrs:
                         spack.schema.merge_yaml(dest, attrs["build-job"])
                     break
@@ -653,7 +624,7 @@ class SpackCIConfig:
 
                 def _apply_section(dest, src):
                     if do_remove:
-                        dest = spack.config.remove_yaml(dest, src[remove_job_name])
+                        dest = cfg.remove_yaml(dest, src[remove_job_name])
                     if do_merge:
                         dest = copy.copy(spack.schema.merge_yaml(dest, src[merge_job_name]))
 

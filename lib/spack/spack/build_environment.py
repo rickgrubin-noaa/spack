@@ -165,7 +165,9 @@ def jobserver_enabled():
     return "MAKEFLAGS" in os.environ and "--jobserver" in os.environ["MAKEFLAGS"]
 
 
-def get_effective_jobs(jobs, parallel=True, supports_jobserver=False):
+def get_effective_jobs(
+    jobs, parallel: bool = True, supports_jobserver: bool = False
+) -> Optional[int]:
     """Return the number of jobs, or None if supports_jobserver and a jobserver is detected."""
     if not parallel or jobs <= 1 or env_flag(SPACK_NO_PARALLEL_MAKE):
         return 1
@@ -249,7 +251,7 @@ class MakeExecutable(Executable):
         jobs_env_supports_jobserver: bool = False,
         **kwargs,
     ) -> Optional[str]:
-        """Runs this "make" executable in a subprocess.
+        """Runs this ``make`` executable in a subprocess.
 
         Args:
             parallel: if False, parallelism is disabled
@@ -471,12 +473,12 @@ def optimization_flags(compiler, target):
 
 def set_wrapper_variables(pkg, env):
     """Set environment variables used by the Spack compiler wrapper (which have the prefix
-    `SPACK_`) and also add the compiler wrappers to PATH.
+    ``SPACK_``) and also add the compiler wrappers to PATH.
 
     This determines the injected -L/-I/-rpath options; each of these specifies a search order and
     this function computes these options in a manner that is intended to match the DAG traversal
-    order in `SetupContext`. TODO: this is not the case yet, we're using post order, SetupContext
-    is using topo order."""
+    order in ``SetupContext``. TODO: this is not the case yet, we're using post order,
+    ``SetupContext`` is using topo order."""
     # Set compiler flags injected from the spec
     set_wrapper_environment_variables_for_flags(pkg, env)
 
@@ -1126,6 +1128,8 @@ def _setup_pkg_and_run(
     input_pipe: Optional[Connection],
     jsfd1: Optional[Connection],
     jsfd2: Optional[Connection],
+    stdout_pipe: Optional[Connection] = None,
+    stderr_pipe: Optional[Connection] = None,
 ):
     """Main entry point in the child process for Spack builds.
 
@@ -1161,7 +1165,8 @@ def _setup_pkg_and_run(
         input_multiprocess_fd: stdin from the parent (not passed currently on Windows)
         jsfd1: gmake Jobserver file descriptor 1.
         jsfd2: gmake Jobserver file descriptor 2.
-
+        stdout_pipe: pipe to redirect stdout to
+        stderr_pipe: pipe to redirect stderr to
     """
 
     context: str = kwargs.get("context", "build")
@@ -1173,6 +1178,12 @@ def _setup_pkg_and_run(
         # child, so we undo Python's precaution. closefd=False since Connection has ownership.
         if input_pipe is not None:
             sys.stdin = os.fdopen(input_pipe.fileno(), closefd=False)
+        if stdout_pipe is not None:
+            os.dup2(stdout_pipe.fileno(), sys.stdout.fileno())
+            stdout_pipe.close()
+        if stderr_pipe is not None:
+            os.dup2(stderr_pipe.fileno(), sys.stderr.fileno())
+            stderr_pipe.close()
 
         pkg = serialized_pkg.restore()
 
@@ -1210,7 +1221,10 @@ def _setup_pkg_and_run(
                 # 'pkg' is not defined yet
                 pass
         elif context == "test":
-            logfile = os.path.join(pkg.test_suite.stage, pkg.test_suite.test_log_name(pkg.spec))
+            logfile = os.path.join(
+                pkg.test_suite.stage,  # type: ignore[union-attr]
+                pkg.test_suite.test_log_name(pkg.spec),  # type: ignore[union-attr]
+            )
 
         error_msg = str(e)
         if isinstance(e, (spack.multimethod.NoSuchMethodError, AttributeError)):
@@ -1247,7 +1261,7 @@ class BuildProcess:
     """Class used to manage builds launched by Spack.
 
     Each build is launched in its own child process, and the main Spack process
-    tracks each child with a ``BuildProcess`` object. `BuildProcess`` is used to:
+    tracks each child with a ``BuildProcess`` object. ``BuildProcess`` is used to:
     - Start and monitor an active child process.
     - Clean up its processes and resources when the child process completes.
     - Kill the child process if needed.
@@ -1343,6 +1357,8 @@ def start_build_process(
     """
     read_pipe, write_pipe = multiprocessing.Pipe(duplex=False)
     input_fd = None
+    stdout_fd = None
+    stderr_fd = None
     jobserver_fd1 = None
     jobserver_fd2 = None
 
@@ -1352,6 +1368,16 @@ def start_build_process(
         # Forward sys.stdin when appropriate, to allow toggling verbosity
         if sys.platform != "win32" and sys.stdin.isatty() and hasattr(sys.stdin, "fileno"):
             input_fd = Connection(os.dup(sys.stdin.fileno()))
+
+        # If our process has redirected stdout/stderr after the forkserver was started, we need to
+        # make the forked processes use the new file descriptors.
+        if multiprocessing.get_start_method() == "forkserver":
+            try:
+                stdout_fd = Connection(os.dup(sys.stdout.fileno()))
+                stderr_fd = Connection(os.dup(sys.stderr.fileno()))
+            except Exception:
+                pass
+
         mflags = os.environ.get("MAKEFLAGS")
         if mflags is not None:
             m = re.search(r"--jobserver-[^=]*=(\d),(\d)", mflags)
@@ -1369,6 +1395,8 @@ def start_build_process(
                 input_fd,
                 jobserver_fd1,
                 jobserver_fd2,
+                stdout_fd,
+                stderr_fd,
             ),
             read_pipe=read_pipe,
             timeout=timeout,
@@ -1391,6 +1419,10 @@ def start_build_process(
         # Close the input stream in the parent process
         if input_fd is not None:
             input_fd.close()
+        if stdout_fd is not None:
+            stdout_fd.close()
+        if stderr_fd is not None:
+            stderr_fd.close()
 
     return p
 
@@ -1408,18 +1440,17 @@ def complete_build_process(process: BuildProcess):
         typ = "exit" if process.exitcode >= 0 else "signal"
         return f"{typ} {abs(process.exitcode)}"
 
-    timeout = process.timeout
-    process.join(timeout=timeout)
-    if process.is_alive():
-        warnings.warn(f"Terminating process, since the timeout of {timeout}s was exceeded")
-        process.terminate()
-
     try:
         # Check if information from the read pipe has been received.
         child_result = process.read_pipe.recv()
     except EOFError:
         raise InstallError(f"The process has stopped unexpectedly ({exitcode_msg(process)})")
-
+    finally:
+        timeout = process.timeout
+        process.join(timeout=timeout)
+        if process.is_alive():
+            warnings.warn(f"Terminating process, since the timeout of {timeout}s was exceeded")
+            process.terminate()
     # If returns a StopPhase, raise it
     if isinstance(child_result, spack.error.StopPhase):
         raise child_result
@@ -1515,7 +1546,7 @@ def get_package_context(traceback, context=3):
 
 class ChildError(InstallError):
     """Special exception class for wrapping exceptions from child processes
-       in Spack's build environment.
+    in Spack's build environment.
 
     The main features of a ChildError are:
 
@@ -1536,11 +1567,11 @@ class ChildError(InstallError):
 
     The long_message of a ChildError displays one of two things:
 
-      1. If the original error was a ProcessError, indicating a command
-         died during the build, we'll show context from the build log.
+    1. If the original error was a ProcessError, indicating a command
+       died during the build, we'll show context from the build log.
 
-      2. If the original error was any other type of error, we'll show
-         context from the Python code.
+    2. If the original error was any other type of error, we'll show
+       context from the Python code.
 
     SpackError handles displaying the special traceback if we're in debug
     mode with spack -d.
