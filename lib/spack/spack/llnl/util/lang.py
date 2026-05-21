@@ -211,7 +211,7 @@ done = object()
 
 def tuplify(seq):
     """Helper for lazy_lexicographic_ordering()."""
-    return tuple((tuplify(x) if callable(x) else x) for x in seq())
+    return tuple([(tuplify(x) if callable(x) else x) for x in seq()])
 
 
 def lazy_eq(lseq, rseq):
@@ -456,7 +456,7 @@ class HashableMap(typing.MutableMapping[K, V]):
         del self.dict[key]
 
     def _cmp_iter(self):
-        for _, v in sorted(self.items()):
+        for _, v in sorted(self.dict.items()):
             yield v
 
 
@@ -487,7 +487,7 @@ def match_predicate(*args):
                     return True
             else:
                 raise ValueError(
-                    "args to match_predicate must be regex, " "list of regexes, or callable."
+                    "args to match_predicate must be regex, list of regexes, or callable."
                 )
         return False
 
@@ -670,6 +670,19 @@ def pretty_seconds(seconds):
     return pretty_seconds_formatter(seconds)(seconds)
 
 
+def pretty_duration(seconds: float) -> str:
+    """Format a duration in seconds as a compact human-readable string (e.g. "1h02m", "3m05s",
+    "45s")."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m"
+
+
 class ObjectWrapper:
     """Base class that wraps an object. Derived classes can add new behavior
     while staying undercover.
@@ -723,16 +736,23 @@ class Singleton:
     @property
     def instance(self):
         if self._instance is None:
-            instance = self.factory()
+            try:
+                instance = self.factory()
 
-            if isinstance(instance, types.GeneratorType):
-                # if it's a generator, assign every value
-                for value in instance:
-                    self._instance = value
-            else:
-                # if not, just assign the result like a normal singleton
-                self._instance = instance
-
+                if isinstance(instance, types.GeneratorType):
+                    # if it's a generator, assign every value
+                    for value in instance:
+                        self._instance = value
+                else:
+                    # if not, just assign the result like a normal singleton
+                    self._instance = instance
+            except AttributeError as e:
+                # getattr will "absorb" an AttributeError that occurs
+                # during the execution of the factory method: we'd like
+                # to show that so wrap it in something that isn't absorbed
+                raise SingletonInstantiationError(
+                    "AttrbuteError during creation of Singleton instance"
+                ) from e
         return self._instance
 
     def __getattr__(self, name):
@@ -761,6 +781,10 @@ class Singleton:
 
     def __repr__(self):
         return repr(self.instance)
+
+
+class SingletonInstantiationError(Exception):
+    """Error that indicates a singleton that cannot instantiate."""
 
 
 def get_entry_points(*, group: str):
