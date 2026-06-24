@@ -11,7 +11,14 @@ from datetime import datetime, timedelta
 import pytest
 
 import spack.llnl.util.lang
-from spack.llnl.util.lang import dedupe, match_predicate, memoized, pretty_date
+from spack.llnl.util.lang import (
+    Singleton,
+    SingletonInstantiationError,
+    dedupe,
+    match_predicate,
+    memoized,
+    pretty_date,
+)
 
 
 @pytest.fixture()
@@ -124,6 +131,15 @@ def test_pretty_seconds():
     assert spack.llnl.util.lang.pretty_seconds(2.1 / 1000 / 1000) == "2.100us"
     assert spack.llnl.util.lang.pretty_seconds(2.1 / 1000 / 1000 / 1000) == "2.100ns"
     assert spack.llnl.util.lang.pretty_seconds(2.1 / 1000 / 1000 / 1000 / 10) == "0.210ns"
+
+
+def test_pretty_duration():
+    assert spack.llnl.util.lang.pretty_duration(0) == "0s"
+    assert spack.llnl.util.lang.pretty_duration(45) == "45s"
+    assert spack.llnl.util.lang.pretty_duration(60) == "1m00s"
+    assert spack.llnl.util.lang.pretty_duration(125) == "2m05s"
+    assert spack.llnl.util.lang.pretty_duration(3600) == "1h00m"
+    assert spack.llnl.util.lang.pretty_duration(3661) == "1h01m"
 
 
 def test_match_predicate():
@@ -330,6 +346,29 @@ def test_fnmatch_multiple():
     assert not regex.match("libbar.so.1")
     assert not regex.match("libfoo.solibbar.so")
     assert not regex.match("libbaz.so")
+
+
+def _attr_error_factory():
+    raise AttributeError("Could not make something")
+
+
+def test_singleton_instantiation_attr_failure():
+    """
+    If an AttributeError occurs during the instantiation of a Singleton
+    object, we want to see that error.
+    """
+    x = Singleton(_attr_error_factory)
+    with pytest.raises(SingletonInstantiationError) as last_exception:
+        x.something
+
+    def follow_exceptions(e):
+        while e:
+            yield e
+            e = e.__cause__ or e.__context__
+
+    assert any(
+        "Could not make something" in str(e) for e in follow_exceptions(last_exception.value)
+    )
 
 
 class TestPriorityOrderedMapping:

@@ -11,6 +11,7 @@ from typing import List
 import spack.cmd
 import spack.config
 import spack.environment as ev
+import spack.installer_dispatch
 import spack.llnl.util.filesystem as fs
 import spack.paths
 import spack.spec
@@ -286,8 +287,8 @@ def _dump_log_on_error(e: InstallError):
             shutil.copyfileobj(log, sys.stderr)
 
 
-def _die_require_env():
-    msg = "install requires a package argument or active environment"
+def _die_require_env(parser):
+    msg = "requires a package argument or active environment"
     if "spack.yaml" in os.listdir(os.getcwd()):
         # There's a spack.yaml file in the working dir, the user may
         # have intended to use that
@@ -300,7 +301,7 @@ def _die_require_env():
             "  OR\n"
             "    spack --env . install"
         )
-    tty.die(msg)
+    parser.error(msg)
 
 
 def install(parser, args):
@@ -325,7 +326,7 @@ def install(parser, args):
     env = ev.active_environment()
 
     if not env and not args.spec:
-        _die_require_env()
+        _die_require_env(args.subparser)
 
     try:
         if env:
@@ -430,7 +431,7 @@ def install_without_active_env(args, install_kwargs, reporter):
     concrete_specs = concrete_specs_from_cli(args, install_kwargs)
 
     if len(concrete_specs) == 0:
-        tty.die("The `spack install` command requires a spec to install.")
+        args.subparser.error("requires a spec")
 
     if args.overwrite:
         require_user_confirmation_for_overwrite(concrete_specs, args)
@@ -439,13 +440,10 @@ def install_without_active_env(args, install_kwargs, reporter):
     installs = [s.package for s in concrete_specs]
     install_kwargs["explicit"] = [s.dag_hash() for s in concrete_specs]
 
-    if spack.config.get("config:installer", "old") == "new":
-        from spack.new_installer import PackageInstaller
-    else:
-        from spack.installer import PackageInstaller
-
     try:
-        builder = PackageInstaller(installs, **install_kwargs)
+        builder = spack.installer_dispatch.create_installer(
+            installs, create_reports=reporter is not None, **install_kwargs
+        )
         builder.install()
     finally:
         if reporter:

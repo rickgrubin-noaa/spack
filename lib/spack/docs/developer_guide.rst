@@ -456,7 +456,7 @@ As the action runs, you should observe output similar to:
    ssh 5RjFs7LPdtwGG8cwSPkGrdMNg@sfo2.tmate.io
    https://tmate.io/t/5RjFs7LPdtwGG8cwSPkGrdMNg
 
-The first line is the ssh command neccesary to connect to the server, the second line is a tmate web-ui that also provides access to the ssh server on the runner.
+The first line is the ssh command necessary to connect to the server, the second line is a tmate web UI that also provides access to the ssh server on the runner.
 
 .. note:: The web UI has occasionally been unresponsive, if it does not respond within ~10s, you'll need to use your local ssh utility.
 
@@ -690,21 +690,78 @@ By running this command before and after the change, you can make sure that your
 Profiling
 ---------
 
-Spack has some limited built-in support for profiling, and can report statistics using standard Python timing tools.
-To use this feature, supply ``--profile`` to Spack on the command line, before any subcommands.
+To profile Spack, use Python's built-in `cProfile <https://docs.python.org/3/library/profile.html#module-cProfile>`_ module directly:
 
-.. _spack-p:
+.. code-block:: console
 
-``spack --profile``
-^^^^^^^^^^^^^^^^^^^
+   $ python3 -m cProfile -s cumtime bin/spack find
+   $ python3 -m cProfile -o profile.out bin/spack find
 
-``spack --profile`` output looks like this:
+.. _debugging-concretization:
 
-.. command-output:: spack --profile graph hdf5
-   :ellipsis: 25
+Debugging concretization
+------------------------
 
-The bottom of the output shows the most time-consuming functions, slowest on top.
-The profiling support is from Python's built-in tool, `cProfile <https://docs.python.org/3/library/profile.html#module-cProfile>`_.
+When working on the ASP-based solver in ``lib/spack/spack/solver/``, it is often useful to inspect the raw facts and rules that clingo sees, and to run clingo directly outside of Spack.
+
+Generating ASP facts
+^^^^^^^^^^^^^^^^^^^^
+
+The ``spack solve --show=asp`` flag dumps all ASP facts generated for a given spec to stdout:
+
+.. code-block:: console
+
+   $ spack solve --show=asp zlib-ng > zlib.lp
+
+The resulting file contains both the package facts (versions, variants, dependencies) and the problem-specific facts derived from the user's configuration.
+It can be fed directly to clingo alongside the solver rules.
+
+Running clingo directly
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Once you have the facts file, you can invoke clingo directly.
+This bypasses Spack's Python layer and lets you iterate on ``.lp`` rule files quickly.
+
+On Linux (includes libc compatibility rules):
+
+.. code-block:: console
+
+   $ LP_FILES="lib/spack/spack/solver/concretize.lp \
+               lib/spack/spack/solver/heuristic.lp \
+               lib/spack/spack/solver/display.lp \
+               lib/spack/spack/solver/libc_compatibility.lp \
+               lib/spack/spack/solver/direct_dependency.lp"
+   $ clingo --verbose=3 --stats=2 --quiet=1,0,0 [--project-anonymous] \
+            --configuration=tweety --opt-strategy=usc,one \
+            --heuristic=Domain $LP_FILES zlib.lp
+
+On macOS, replace ``libc_compatibility.lp`` with ``os_compatibility.lp``.
+
+Reading the output
+^^^^^^^^^^^^^^^^^^
+
+``--quiet=1,0,0`` suppresses intermediate models and shows only the optimal answer.
+``--stats=2`` appends a detailed statistics block at the end of the output.
+The most useful fields are:
+
+* **Grounding**: total number of ground rules; a sudden increase usually indicates a rule is producing a combinatorial blowup.
+* **Solve time**: wall-clock time spent in the search phase alone, excluding grounding.
+* **Optimization**: the vector of objective values at each priority level, useful for verifying that the solver is minimizing the right criteria.
+
+``--verbose=3`` prints each rule as it is grounded, which helps identify which rule is responsible for an unexpected grounding explosion.
+Because the output is very large, redirect it to a file and search for the rule body of interest.
+
+If a solve takes a long time to finish, you can interrupt it with ``Ctrl+C``.
+The partial statistics printed on interrupt are still useful for diagnosing the bottleneck.
+
+Running the concretization test suite
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+After modifying any solver ``.lp`` file, verify correctness with:
+
+.. code-block:: console
+
+   $ pytest -n 8 lib/spack/spack/test/concretization
 
 .. _releases:
 
@@ -864,6 +921,9 @@ The majority of the work is to cherry-pick the bug fixes, which ideally should b
 
 The backports pull request is always titled ``Backports vX.Y.Z`` and is labelled ``backports``.
 It is opened from a branch named ``backports/vX.Y.Z`` and targets the ``releases/vX.Y`` branch.
+
+The first commit on the ``backports/vX.Y.Z`` branch should update the Spack version to ``X.Y.Z.dev0``, and should have the commit message ``set version to X.Y.Z.dev0``.
+This ensures that if users check out an intermediate commit between two patch releases, Spack reports the version correctly.
 
 Whenever a pull request labelled ``vX.Y.Z`` is merged, cherry-pick the associated squashed commit on ``develop`` to the ``backports/vX.Y.Z`` branch.
 For pull requests that were rebased (or not squashed), cherry-pick each associated commit individually.

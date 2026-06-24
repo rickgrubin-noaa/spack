@@ -182,7 +182,8 @@ def parse_specs(
     args = [args] if isinstance(args, str) else args
     arg_string = " ".join([quote_kvp(arg) for arg in args])
 
-    specs = spack.spec_parser.parse(arg_string)
+    toolchains = spack.config.CONFIG.get("toolchains", {})
+    specs = spack.spec_parser.parse(arg_string, toolchains=toolchains)
     if not concretize:
         return specs
 
@@ -485,7 +486,8 @@ def display_specs(specs, args=None, **kwargs):
         if flags:
             ffmt += " {compiler_flags}"
         vfmt = "{variants}" if variants else ""
-        format_string = nfmt + "{@version}" + vfmt + ffmt
+        hfmt = "{/abstract_hash}"
+        format_string = nfmt + "{@version}" + vfmt + ffmt + hfmt
 
     if specfile_format:
         format_string = "[{specfile_version}] " + format_string
@@ -637,29 +639,26 @@ def extant_file(f):
     return f
 
 
-def require_active_env(cmd_name):
-    """Used by commands to get the active environment
+def require_active_env(parser):
+    """Used by commands to get the active environment.
 
-    If an environment is not found, print an error message that says the calling
-    command *needs* an active environment.
+    If an environment is not found, calls ``parser.error()`` which prints usage and exits.
 
     Arguments:
-        cmd_name (str): name of calling command
+        parser: the subparser for the command (typically ``args.subparser``)
 
     Returns:
         (spack.environment.Environment): the active environment
     """
     env = ev.active_environment()
-
     if env:
         return env
-
-    tty.die(
-        "`spack %s` requires an environment" % cmd_name,
-        "activate an environment first:",
-        "    spack env activate ENV",
-        "or use:",
-        "    spack -e ENV %s ..." % cmd_name,
+    parser.error(
+        "requires an active environment\n"
+        "  activate an environment first:\n"
+        "      spack env activate ENV\n"
+        "  or use:\n"
+        "      spack -e ENV %s ..." % parser.prog.partition(" ")[2]
     )
 
 
@@ -760,7 +759,7 @@ def group_arguments(
         prefix_length: length of any additional arguments (including spaces) to be passed before
             the groups from args; default is 0 characters
         max_group_length: max length of characters that if a group of args is joined by ``" "``
-            On unix, ths defaults to SC_ARG_MAX from sysconf. On Windows the default is
+            On unix, this defaults to SC_ARG_MAX from sysconf. On Windows the default is
             the max usable for CreateProcess (32,768 chars)
 
     """
@@ -770,7 +769,7 @@ def group_arguments(
         max_group_length = 32766
         if hasattr(os, "sysconf"):  # sysconf is only on unix
             try:
-                # returns -1 if an option isn't present (soem older POSIXes)
+                # returns -1 if an option isn't present (some older POSIXes)
                 sysconf_max = os.sysconf("SC_ARG_MAX")
                 max_group_length = sysconf_max if sysconf_max != -1 else max_group_length
             except (ValueError, OSError):
